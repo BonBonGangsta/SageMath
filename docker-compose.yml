@@ -1,0 +1,18 @@
+# docker-compose.yml
+services:
+    sagemath-runner:
+        platform: linux/amd64
+        image: sagemath-runner:latest
+        env_file: .env
+        build:
+            context: .
+            dockerfile: docker/Dockerfile # adjust if your Dockerfile lives elsewhere
+        working_dir: /workspace
+        volumes:
+            - ./:/workspace
+            - /etc/localtime:/etc/localtime:ro
+            - ${LOG_PATH:-./logs}/sagemath:/heartbeats
+        environment:
+            LOG_PATH: ${LOG_PATH:-./logs}
+        mem_limit: 24g
+        cpus: 6

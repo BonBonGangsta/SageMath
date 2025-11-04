@@ -1,0 +1,7 @@
+*.txt
+*.log
+*.csv
+*.ipynb_checkpoints
+*.nohup.out
+knots/
+outputs/
