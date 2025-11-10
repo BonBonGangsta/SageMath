@@ -16,21 +16,21 @@ A clean starting point for running SageMath workflows inside Docker and orchestr
 
 ### 1. Build the Docker Image
 Replace docker/Dockerfile with the real path if it lives elsewhere.
-docker build \
+```docker build \
   --file docker/Dockerfile \
   --tag your-namespace/sagemath:latest \
-  .
+  .```
 
 ### 2. Run SageMath in a Container
 Mount the project so SageMath can read/write notebooks or scripts.
-docker run \
+```docker run \
   --rm \
   --interactive \
   --tty \
   --name sagemath-runner \
   --volume "$(pwd)":/workspace \
   your-namespace/sagemath:latest \
-  sage
+  sage```
 
 ## Using run_sage_and_notify.sh
 
@@ -39,7 +39,7 @@ chmod +x run_sage_and_notify.sh
 
 ### Basic Invocation
 Run the script from the repository root:
-./run_sage_and_notify.sh {Name of Knot} {/path/to/knot_script.sage}
+```./run_sage_and_notify.sh {Name of Knot} {/path/to/knot_script.sage}```
 
 recommendations:
 
@@ -49,16 +49,14 @@ nohup ./run_sage_and_notify.sh {Name of Knot} {/path/to/knot_script.sage} 2>&1 &
 
 ### Running Inside Docker
 If the script is meant to execute inside the container, first enter the container:
-docker run --rm -it -v "$(pwd)":/workspace your-namespace/sagemath:latest /bin/bash
+`docker run --rm -it -v "$(pwd)":/workspace your-namespace/sagemath:latest /bin/bash`
 
 Then run:
- /workspace/run_sage_and_notify.sh ...
+```sage {sagefile}.sage```
 
 ## Troubleshooting
 - Image build fails: check the Docker build context path and that all COPY/ADD targets exist.
 - Permission denied: ensure the script has execute permissions and that Docker volumes map to writable directories.
 
-## Next Steps
-- Document any required cron jobs or CI hooks that call run_sage_and_notify.sh.
-- Add concrete examples of SageMath scripts and expected outputs.
-- Expand the Troubleshooting section as you discover common failure modes.
+## Using NTFY
+NTFY is a simple HTTP-based pub-sub notification service. You can self host the application or use their REST API for free. Filling in the `NTFY_URL` and `NTFY_TOPIC` if you are self hosting. For more information, please visit: [https://ntfy.sh](https://ntfy.sh)
