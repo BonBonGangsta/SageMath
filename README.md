@@ -54,7 +54,7 @@ If the script is meant to execute inside the container, first enter the containe
 `docker run --rm -it -v "$(pwd)":/workspace your-namespace/sagemath:latest /bin/bash`
 
 Then run:
-`sage {sagefile}.sage`
+`sage /path/to/sagefile`
 
 ## Troubleshooting
 - Image build fails: check the Docker build context path and that all COPY/ADD targets exist.
