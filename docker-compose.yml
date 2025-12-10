@@ -6,7 +6,7 @@ services:
         env_file: .env
         build:
             context: .
-            dockerfile: docker/Dockerfile # adjust if your Dockerfile lives elsewhere
+            dockerfile: Dockerfile # adjust if your Dockerfile lives elsewhere
         working_dir: /workspace
         volumes:
             - ./:/workspace

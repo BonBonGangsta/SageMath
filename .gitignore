@@ -5,3 +5,7 @@
 *.nohup.out
 knots/
 outputs/
+.env
+*.out
+extras/formatter.py
+extras/remove_parentheses.py

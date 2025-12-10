@@ -1,5 +1,6 @@
 FROM sagemath/sagemath
 #RUN sage -pip install notebook
+RUN sage -pip install regina
 
 WORKDIR /app
 

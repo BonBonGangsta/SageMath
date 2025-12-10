@@ -2,36 +2,47 @@ import random
 import time
 from datetime import datetime, timedelta, UTC
 from collections import Counter
-from collections import namedtuple
 from sage.topology.simplicial_complex import SimplicialComplex
 from sage.graphs.graph import Graph
 import os
 import json
+import csv
 
 # Define the 3-ball via facets
 facets = [
-    [0, 1, 2, 3],
-    [0, 1, 2, 4],
-    [0, 1, 4, 5],
-    [0, 1, 5, 7],
-    [0, 1, 6, 8],
-    [0, 1, 7, 8],
-    [0, 2, 3, 4],
-    [0, 6, 7, 8],
-    [1, 2, 3, 6],
-    [1, 2, 4, 5],
-    [1, 2, 5, 8],
-    [1, 2, 6, 8],
-    [1, 5, 7, 8],
-    [2, 3, 4, 7],
-    [2, 3, 6, 7],
-    [2, 4, 6, 7],
-    [2, 4, 6, 8],
-    [4, 6, 7, 8]
+    [1,2,5], [2,3,5], [1,5,6], [1,2,6], [1,2,4], [1,4,7],
+    [1,3,7], [2,3,4], [2,3,6], [3,6,7], [3,4,5], [4,5,7],
+    [5,6,7]
 ]
 
 # Build the complex
 K = SimplicialComplex(facets)
+
+# add csv capabilities
+CSV_OUTPUT = os.environ.get("CSV_OUTPUT", "outputs/nonevasive_tree.csv")
+
+def export_proof_tree_to_csv(node, csv_path=CSV_OUTPUT):
+    """Write the proof tree (link/deletion branches) to a CSV."""
+    rows = []
+
+    def walk(n, branch, depth):
+        if n is None:
+            return
+        rows.append({
+            "depth": depth,
+            "branch": branch,
+            "vertex": "" if n.vertex is None else n.vertex,
+            "context": " ".join(map(str, n.context)),
+        })
+        walk(n.link, "link", depth + 1)
+        walk(n.deletion, "deletion", depth + 1)
+
+    walk(node, "root", 0)
+    os.makedirs(os.path.dirname(csv_path), exist_ok = True)
+    with open(csv_path, "w", newline = "") as f:
+        writer = csv.DictWriter(f, fieldnames=["depth", "branch", "vertex", "context"])
+        writer.writeheader()
+        writer.writerows(rows)
 
 # === Tree node for proof tracking ===
 class ProofNode:
@@ -97,7 +108,7 @@ def get_vertices_by_strategy(K, strategy="greedy"):
         raise ValueError(f"Unknown strategy: {strategy}")
     return vertices
 
-def is_1d_skeletion(K):
+def is_1d_skeleton(K):
     return K.dimension() <= 1 and all(len(list(facet)) <= 2 for facet in K.facets())
 
 def is_graph_nonevasive(K):
@@ -140,7 +151,7 @@ def is_nonevasive(K, ordering=None, depth=0, strategy="greedy", context_path=(),
         else:
             return [(None, None)]
 
-    if is_1d_skeletion(K) and is_graph_nonevasive(K):
+    if is_1d_skeleton(K) and is_graph_nonevasive(K):
         node = ProofNode(None, ordering.copy())
         return [(ordering.copy(), node)]
 
@@ -173,23 +184,26 @@ result_paths = is_nonevasive(K, strategy="random")
 print("\n" + "="*50, flush=True)
 if result_paths:
     path, node = result_paths[0]
-    print(f"✅ The complex is non-evasive. Found 1 valid deletion path.", flush=True)
-    print("Deletion path:", path, flush=True)
-    print("=== Deletion Decision Tree ===", flush=True)
-    def print_tree(node, prefix=""):
-        if node is None:
-            return
-        print(f"{prefix}Vertex {node.vertex} (Context: {node.context})", flush=True)
-        if node.link:
-            print(f"{prefix}  ↪ Link:", flush=True)
-            print_tree(node.link, prefix + "    ")
-        if node.deletion:
-            print(f"{prefix}  ↪ Deletion:", flush=True)
-            print_tree(node.deletion, prefix + "    ")
-    if result_paths and result_paths[0][1]:
-        print_tree(result_paths[0][1])
-else:
-    print("❌ The complex is evasive. No deletion order found.", flush=True)
+    if path is not None:
+        print(f"✅ The complex is non-evasive. Found 1 valid deletion path.", flush=True)
+        print("Deletion path:", path, flush=True)
+        print("=== Deletion Decision Tree ===", flush=True)
+        def print_tree(node, prefix=""):
+            if node is None:
+                return
+            print(f"{prefix}Vertex {node.vertex} (Context: {node.context})", flush=True)
+            if node.link:
+                print(f"{prefix}  ↪ Link:", flush=True)
+                print_tree(node.link, prefix + "    ")
+                export_proof_tree_to_csv(node)
+            if node.deletion:
+                print(f"{prefix}  ↪ Deletion:", flush=True)
+                print_tree(node.deletion, prefix + "    ")
+                export_proof_tree_to_csv(node)
+        if result_paths and result_paths[0][1]:
+            print_tree(result_paths[0][1])
+    else:
+        print("❌ The complex is evasive. No deletion order found.", flush=True)
 
 end_time = time.time()
 elapsed = end_time - start_time
