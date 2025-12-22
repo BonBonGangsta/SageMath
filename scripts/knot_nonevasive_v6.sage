@@ -10,22 +10,23 @@ import csv
 
 seed_env = os.environ.get("RANDOM_SEED")
 facets = [
-[ 1, 2, 3, 6 ], [ 1, 2, 3, 9 ], [ 1, 2, 6, 9 ], [ 1, 3, 4, 6 ], 
-  [ 1, 3, 4, 9 ], [ 1, 4, 6, 12 ], [ 1, 4, 7, 9 ], [ 1, 4, 7, 12 ], [ 1, 5, 8, 10 ],
-  [ 1, 5, 10, 12 ], [ 1, 5, 11, 12 ], [ 1, 6, 7, 9 ], [ 1, 6, 7, 10 ], 
-  [ 1, 6, 10, 12 ], [ 1, 7, 8, 10 ], [ 1, 7, 8, 11 ], [ 1, 7, 11, 12 ], 
-  [ 2, 3, 5, 6 ], [ 2, 3, 5, 9 ], [ 2, 4, 7, 12 ], [ 2, 4, 8, 10 ], [ 2, 4, 8, 12 ],
-  [ 2, 5, 6, 11 ], [ 2, 5, 9, 12 ], [ 2, 5, 11, 12 ], [ 2, 6, 9, 11 ], 
-  [ 2, 7, 8, 10 ], [ 2, 7, 8, 11 ], [ 2, 7, 11, 12 ], [ 2, 8, 9, 11 ], 
-  [ 2, 8, 9, 12 ], [ 3, 4, 5, 6 ], [ 3, 4, 5, 9 ], [ 4, 5, 6, 8 ], [ 4, 5, 8, 10 ], 
-  [ 4, 5, 9, 10 ], [ 4, 6, 8, 12 ], [ 5, 9, 10, 12 ]
+    [ 2, 3, 4, 7 ], [ 2, 3, 4, 10 ], 
+  [ 2, 3, 7, 10 ], [ 2, 4, 5, 7 ], [ 2, 4, 5, 10 ], [ 2, 5, 7, 13 ], 
+  [ 2, 5, 8, 10 ], [ 2, 5, 8, 13 ], [ 2, 6, 9, 11 ], [ 2, 6, 11, 13 ], 
+  [ 2, 6, 12, 13 ], [ 2, 7, 8, 10 ], [ 2, 7, 8, 11 ], [ 2, 7, 11, 13 ], 
+  [ 2, 8, 9, 11 ], [ 2, 8, 9, 12 ], [ 2, 8, 12, 13 ], [ 3, 4, 6, 7 ], 
+  [ 3, 4, 6, 10 ], [ 3, 5, 8, 13 ], [ 3, 5, 9, 11 ], [ 3, 5, 9, 13 ], 
+  [ 3, 6, 7, 12 ], [ 3, 6, 10, 13 ], [ 3, 6, 12, 13 ], [ 3, 7, 10, 12 ], 
+  [ 3, 8, 9, 11 ], [ 3, 8, 9, 12 ], [ 3, 8, 12, 13 ], [ 3, 9, 10, 12 ], 
+  [ 3, 9, 10, 13 ], [ 4, 5, 6, 7 ], [ 4, 5, 6, 10 ], [ 5, 6, 7, 9 ], 
+  [ 5, 6, 9, 11 ], [ 5, 6, 10, 11 ], [ 5, 7, 9, 13 ], [ 6, 10, 11, 13 ]
 ]
 
 # Build the complex
 K = SimplicialComplex(facets)
 
 # add csv capabilities
-CSV_OUTPUT = os.environ.get("CSV_OUTPUT", "outputs/nonevasive_tree.csv")
+CSV_OUTPUT = os.environ.get("CSV_OUTPUT", "outputs/B12_38_tree.csv")
 
 def export_proof_tree_to_csv(node, csv_path=CSV_OUTPUT):
     """Write the proof tree (link/deletion branches) to a CSV."""
@@ -88,10 +89,9 @@ def log_heartbeat(status="running"):
 
 # Safe deletion function — builds a new complex without vertex v
 def delete_vertex(K, v):
-    if v not in K.vertices():
-        return K  # or raise if that’s preferable
-    keep_facets = [f for f in K.facets() if v not in f]
-    return SimplicialComplex(keep_facets)
+    new_K = SimplicialComplex(K.facets())
+    new_K.remove_faces([[v]])
+    return SimplicialComplex(new_K.facets())
 
 def get_vertices_by_strategy(K, strategy="greedy", rng=None):
     # Vertex selection strategies
@@ -130,7 +130,7 @@ def is_nonevasive(K, ordering=None, depth=0, strategy="greedy", context_path=(),
             node = ProofNode(None, ordering.copy())
             return [(ordering.copy(), node)]
         else:
-           return [(None, None)]
+            return [(None, None)]
 
     # Vertex selection strategies
     vertices = get_vertices_by_strategy(K, strategy, rng=rng)

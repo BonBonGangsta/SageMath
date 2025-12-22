@@ -13,6 +13,8 @@ fi
 
 KNOT_NAME=${1:-}
 SCRIPT_FILE=${2:-}
+FACETS_FILE=${3:-${FACETS_FILE:-}}
+CSV_OUTPUT="outputs/${KNOT_NAME}_tree.csv"
 
 if [[ -z "${SCRIPT_FILE}" ]]; then
   echo "Please provide a script file to run"
@@ -40,6 +42,19 @@ fi
 
 RELATIVE_SCRIPT_PATH=${SCRIPT_PATH#"${SCRIPT_DIR}/"}
 
+if [[ -n "${FACETS_FILE}" ]]; then
+  if [[ ! -f "${FACETS_FILE}" ]]; then
+    echo "Facets file '${FACETS_FILE}' was not found"
+    exit 1
+  fi
+  FACETS_PATH=$(realpath "${FACETS_FILE}")
+  if [[ "${FACETS_PATH}" != "${SCRIPT_DIR}"/* ]]; then
+    echo "Facets file must live inside ${SCRIPT_DIR}"
+    exit 1
+  fi
+  RELATIVE_FACETS_PATH=${FACETS_PATH#"${SCRIPT_DIR}/"}
+fi
+
 LOG_DIR="${SCRIPT_DIR}/outputs"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/${KNOT_NAME}.log"
@@ -47,6 +62,8 @@ LOG_FILE="${LOG_DIR}/${KNOT_NAME}.log"
 docker compose run --rm \
   --entrypoint /bin/bash \
   -v "${LOG_DIR}:/outputs" \
+  -e CSV_OUTPUT="${CSV_OUTPUT}" \
+  ${FACETS_FILE:+-e FACETS_FILE="${RELATIVE_FACETS_PATH}"} \
   sagemath-runner -c "
     set -euo pipefail
     export PATH=/usr/bin:/usr/local/bin:/bin:\$PATH

@@ -4,20 +4,22 @@ from datetime import datetime, timedelta, UTC
 from collections import Counter
 from sage.topology.simplicial_complex import SimplicialComplex
 from sage.graphs.graph import Graph
-import os
-import json
-import csv
+import csv, ast, json, os
 
 seed_env = os.environ.get("RANDOM_SEED")
-facets = [
-[1, 3, 7, 13], [2, 4, 10,14], [3, 6, 10, 11], [4, 5, 8, 13], [5, 7, 11, 14], [6, 10, 13, 14], 
-[1, 3, 9, 13], [2, 6, 8, 12], [3, 6, 10, 14], [4, 7, 11, 12], [5, 8, 12, 13], [7, 11, 12, 13], 
-[1, 5, 7, 11], [2, 6, 10, 12], [3, 7, 12, 13], [4, 8, 11, 12], [5, 9, 12, 13], [8, 12, 13, 14], 
-[1, 5, 9, 11], [2, 8, 12, 14], [3, 7, 11, 14], [4, 8, 13, 14], [5, 9, 11, 14], [9, 11, 13, 14], 
-[1, 7, 11, 13], [2, 10, 12, 14], [3, 9, 12, 13], [4, 10, 13, 14], [6, 8, 11,12], [10, 11, 12, 14], 
-[1, 9, 11, 13], [3, 4, 7, 11], [3, 10, 11, 14], [5, 6, 9, 13], [6, 9, 13, 14], 
-[11, 12, 13, 14], [2, 4, 8, 14], [3, 4, 7, 12], [4, 5, 8, 12], [5, 6, 9, 14], [6, 10, 11, 12]
-]
+facets_file = os.environ.get("FACETS_FILE")
+
+def load_facets_from_file(path):
+    with open(path, "r") as f:
+        text = f.read()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return ast.literal_eval(text)
+
+if facets_file:
+    facets = load_facets_from_file(facets_file)
+
 
 # Build the complex
 K = SimplicialComplex(facets)
@@ -91,11 +93,42 @@ def delete_vertex(K, v):
     return SimplicialComplex(new_K.facets())
 
 def is_simplex(K):
+    # K is a SimplicialComplex at the point of calling
+    dim = K.dimension()
+    vertices = set(K.vertices())
     facets = [set(f) for f in K.facets()]
-    if len(facets) != 1:
-        return False
-    facet = facets[0]
-    return facet == set(K.vertices()) and len(facet) == K.dimension() + 1
+
+    # 0D: a single point
+    if dim == 0:
+        return len(vertices) == 1
+    
+    # 1D: a tree (connected and acyclic graph)
+    if dim == 1:
+        if any(len(f) > 2 for f in facets):
+            return False
+        edges = [tuple(f) for f in facets if len(f) == 2]
+        if not edges:
+            return False
+        G = Graph()
+        G.add_vertices(vertices)
+        G.add_edges(edges)
+        return G.is_tree()
+    
+    # 2D: a filled triangle on exactly three vertices
+    if dim == 2:
+        if len(vertices) != 3:
+            return False
+        maximal = [set(f) for f in K.facets()]
+        return len(maximal) == 1 and maximal[0] == vertices
+
+    # 3D: a filled tetrahedron on exactly four vertices
+    if dim == 3:
+        if len(vertices) != 4:
+            return False
+        maximal = [set(f) for f in K.facets()]
+        return len(maximal) == 1 and maximal[0] == vertices
+
+    return False
 
 def get_vertices_by_strategy(K, strategy="greedy", rng=None):
     # Vertex selection strategies
@@ -115,29 +148,6 @@ def get_vertices_by_strategy(K, strategy="greedy", rng=None):
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
     return vertices
-
-def is_1d_skeleton(K):
-    return K.dimension() <= 1 and all(len(list(facet)) <= 2 for facet in K.facets())
-
-def is_graph_nonevasive(K):
-    edges = []
-    vertices = set()
-
-    for facet in K.facets():
-        verts = list(facet)
-        if len(verts) == 2:
-            edges.append(tuple(verts))
-        elif len(verts) == 1:
-            vertices.add(verts[0])
-
-    G = Graph()
-    G.add_edges(edges)
-    G.add_vertices(vertices)  # ensure singleton vertices are added
-
-    if G.is_tree() or G.is_path():
-        return True
-
-    return False
 
 def has_trivial_homology(K):
     hom = K.homology()
@@ -166,11 +176,6 @@ def is_nonevasive(K, ordering=None, depth=0, strategy="greedy", context_path=(),
             return [(ordering.copy(), node)]
         else:
             return [(None, None)]
-
-    #if is_1d_skeleton(K) and is_graph_nonevasive(K):
-    #    node = ProofNode(None, ordering.copy())
-    #    return [(ordering.copy(), node)]
-
 
     # Vertex selection strategies
     vertices = get_vertices_by_strategy(K, strategy, rng=rng)
