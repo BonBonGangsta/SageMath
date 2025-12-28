@@ -1,7 +1,6 @@
 import random
 import time
 from datetime import datetime, timedelta, UTC
-from collections import Counter
 from sage.topology.simplicial_complex import SimplicialComplex
 from sage.graphs.graph import Graph
 import csv, ast, json, os
@@ -73,8 +72,8 @@ last_heartbeat = 0  # Initialize globally
 def log_heartbeat(status="running"):
     global last_heartbeat
     now = time.time()
-    # Write heartbeat every 5 minutes max
-    if now - last_heartbeat >= 300 or status != "running":
+    # Write heartbeat every hour
+    if now - last_heartbeat >= 86400 or status != "running":
         last_heartbeat = now
         payload = {
             "status": status,
