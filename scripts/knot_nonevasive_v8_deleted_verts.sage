@@ -22,9 +22,24 @@ if facets_file:
 
 # Build the complex
 K = SimplicialComplex(facets)
+DEL_VERTS = [41,50,105,159,161,288,333,340,389,426,446,564,589,646,
+		1,2,3,4,5,6,7,9,11,14,15,16,23,25,28,32,34,37,38,43,
+		44,45,47,48,52,53,55,57,58,59,60,64,67,71,74,75,78,79,
+		82,84,87,88,89,92,97,98,100,101,108,109,112,113,118,125,
+		126,130,132,133,134,135,137,138,140,142,143,144,149,150,
+		154,155,158,160,163,164,165,166,168,172,173,174,176,177,
+		180,184,188,189,190,191,196,197,198,199,201, 205,206,207,
+		209,210,214,215,220,222,223,224,229,233,235,236,239,244,245,
+		247,249,250,251,253,254,256,257,258,260,261,263,264,266,
+		267,268,270,271,273,274,275,276,279,280,281,282,286,287,289,
+		290,291,292,297,300,306,308,309,315,316,317,319,320,321,
+        327,330,331,334,335,338,341,342,343,344,347,348,349,350,351,352,
+        357,358,363,364,366,369,370,372,374,376,378,379,381,383,384,385,
+        390,393,395,397,399,401,402,403,406,410,413,414,419,423,424,427,
+        431,432]
 
 # add csv capabilities
-CSV_OUTPUT = os.environ.get("CSV_OUTPUT", "outputs/homology_nonevasive.csv")
+CSV_OUTPUT = os.environ.get("CSV_OUTPUT", "outputs/nonevasive_tree.csv")
 
 def export_proof_tree_to_csv(node, csv_path=CSV_OUTPUT):
     """Write the proof tree (link/deletion branches) to a CSV."""
@@ -65,7 +80,7 @@ class ProofNode:
         }
 
 # Path for the heartbeat log, very useful for debugging and monitoring large knots
-CONTAINER_ID = os.environ.get("KNOT", "Knot")
+CONTAINER_ID = os.environ.get("CONTAINER_ID", "default")
 HEARTBEAT_FILE = f"sage_heartbeat_{CONTAINER_ID}.log"
 last_heartbeat = 0  # Initialize globally
 
@@ -152,6 +167,11 @@ def has_trivial_homology(K):
     hom = K.homology()
     return all(h.order() == 1 for h in hom.values())
 
+def delete_vertices(K, vertices_to_delete):
+    new_K = SimplicialComplex(K.facets())
+    faces_to_remove = [[v] for v in vertices_to_delete]
+    new_K.remove_faces(faces_to_remove)
+    return SimplicialComplex(new_K.facets())
 
 # Recursive function to check nonevasiveness
 def is_nonevasive(K, ordering=None, depth=0, strategy="greedy", context_path=(), mode=None, rng=None):
@@ -184,10 +204,9 @@ def is_nonevasive(K, ordering=None, depth=0, strategy="greedy", context_path=(),
         del_K = delete_vertex(K, v)
         if has_trivial_homology(del_K):
             continue
-        print(f"Found potential Vertex: {v}", flush=True)
         del_result = is_nonevasive(del_K, [], depth + 1, strategy=strategy, rng=rng)
         if not del_result or del_result[0][0] is None:
-            continue
+                continue
 
         lk = K.link([v])
         link_result = is_nonevasive(lk, [], depth + 1, strategy=strategy, rng=rng)
@@ -208,8 +227,9 @@ if seed_env is not None:
 else: 
     seed = random.SystemRandom().randrange(1_000_000_000)
 
-print(f"Using Seed: {seed}", flush=True)
+print(f"Using Seed: {seed}", flush=true)
 rng = random.Random(seed)
+K = delete_vertices(K, DEL_VERTS)
 result_paths = is_nonevasive(K, strategy="random", rng=rng)
 print("\n" + "="*50, flush=True)
 if result_paths:
