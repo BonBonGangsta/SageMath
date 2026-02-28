@@ -1,13 +1,20 @@
 import random
 import time
-from datetime import datetime, timedelta, UTC
-from sage.topology.simplicial_complex import SimplicialComplex
-from sage.graphs.graph import Graph
 import csv, ast, json, os
+from datetime import datetime, timedelta, UTC
+from sage.topology.simplcial_complex import SimplicialComplex
+from sage.graphs.graph import Graph
+from pathlib import Path
 
+# Seed
 seed_env = os.environ.get("RANDOM_SEED")
-facets_file = os.environ.get("FACETS_FILE")
+if seed_env is not None:
+    seed = int(seed_env)
+else: 
+    seed = random.SystemRandom().randrange(1_000_000_000)
 
+# Load Facets
+facets_file = os.environ.get("FACETS_FILE")
 def load_facets_from_file(path):
     with open(path, "r") as f:
         text = f.read()
@@ -15,19 +22,17 @@ def load_facets_from_file(path):
         return json.loads(text)
     except json.JSONDecodeError:
         return ast.literal_eval(text)
-
+    
 if facets_file:
     facets = load_facets_from_file(facets_file)
 
-
-# Build the complex
+# build the initial Complex
 K = SimplicialComplex(facets)
 
 # add csv capabilities
-CSV_OUTPUT = os.environ.get("CSV_OUTPUT", "outputs/homology_nonevasive.csv")
+CSV_OUTPUT = os.environ.get("CSV_OUTPUT", f"outputs/{seed_env}_{facets_file}")
 
 def export_proof_tree_to_csv(node, csv_path=CSV_OUTPUT):
-    """Write the proof tree (link/deletion branches) to a CSV."""
     rows = []
 
     def walk(n, branch, depth):
@@ -56,23 +61,25 @@ class ProofNode:
         self.context = tuple(context)
         self.link = None
         self.deletion = None
+    
     def to_dict(self):
         return {
             "vertex": self.vertex,
             "context": self.context,
             "link": self.link.to_dict() if self.link else None,
-            "deletion": self.deletion.to_dict() if self.deletion else None,
+            "deletion": self.deletion.to_dict() if self.deletion else None
         }
-
-# Path for the heartbeat log, very useful for debugging and monitoring large knots
-CONTAINER_ID = os.environ.get("KNOT", "Knot")
+    
+# Headbeat logger
+facets_stem = Path(facets_file).stem
+CONTAINER_ID = os.environ.get("KNOT", facets_stem)
 HEARTBEAT_FILE = f"sage_heartbeat_{CONTAINER_ID}.log"
-last_heartbeat = 0  # Initialize globally
+last_heartbeat = 0
 
 def log_heartbeat(status="running"):
     global last_heartbeat
     now = time.time()
-    # Write heartbeat every hour
+    # Write hearbeat every day
     if now - last_heartbeat >= 86400 or status != "running":
         last_heartbeat = now
         payload = {
@@ -83,9 +90,8 @@ def log_heartbeat(status="running"):
         with open(HEARTBEAT_FILE, "a") as f:
             json.dump(payload, f)
             f.write("\n")
-        print(f"[HEARTBEAT] {json.dumps(payload)}" , flush=True)
 
-# Safe deletion function — builds a new complex without vertex v
+# Safe Deletion function build into SageMath
 def delete_vertex(K, v):
     new_K = SimplicialComplex(K.facets())
     new_K.remove_faces([[v]])
@@ -97,11 +103,11 @@ def is_simplex(K):
     vertices = set(K.vertices())
     facets = [set(f) for f in K.facets()]
 
-    # 0D: a single point
+    # 0D: a single point?
     if dim == 0:
         return len(vertices) == 1
     
-    # 1D: a tree (connected and acyclic graph)
+    # 1D: a tree ( connected and acyclic graph)?
     if dim == 1:
         if any(len(f) > 2 for f in facets):
             return False
@@ -112,25 +118,24 @@ def is_simplex(K):
         G.add_vertices(vertices)
         G.add_edges(edges)
         return G.is_tree()
-    
+
     # 2D: a filled triangle on exactly three vertices
     if dim == 2:
         if len(vertices) != 3:
             return False
         maximal = [set(f) for f in K.facets()]
         return len(maximal) == 1 and maximal[0] == vertices
-
+    
     # 3D: a filled tetrahedron on exactly four vertices
     if dim == 3:
         if len(vertices) != 4:
             return False
         maximal = [set(f) for f in K.facets()]
         return len(maximal) == 1 and maximal[0] == vertices
-
+    
     return False
 
 def get_vertices_by_strategy(K, strategy="greedy", rng=None):
-    # Vertex selection strategies
     if strategy == "greedy":
         vertices = sorted(K.vertices(), key=lambda x: (len(K.link(x).facets()), x))
     elif strategy == "random":
@@ -139,9 +144,6 @@ def get_vertices_by_strategy(K, strategy="greedy", rng=None):
     elif strategy == "max_degree":
         vertex_count = Counter(v for f in K.facets() for v in f)
         vertices = sorted(K.vertices(), key=lambda x: -vertex_count[x])
-    elif strategy == "min_degree":
-        vertex_count = Counter(v for f in K.facets() for v in f)
-        vertices = sorted(K.vertices(), key=lambda x: vertex_count[x])
     elif strategy == "exhaustive":
         vertices = list(K.vertices())
     else:
@@ -152,40 +154,27 @@ def has_trivial_homology(K):
     hom = K.homology()
     return all(h.order() == 1 for h in hom.values())
 
-
-# Recursive function to check nonevasiveness
-def is_nonevasive(K, ordering=None, depth=0, strategy="greedy", context_path=(), mode=None, rng=None):
-
+def is_nonevasive(K, ordering=None, depth=0, strategy="random", context_path=(), mode=None, rng=None):
     if ordering is None:
         ordering = []
-
-    # Early Prune: nontrivial homology, cause apparently that's important now
-    #if not has_trivial_homology(K):
-    #    return [(None, None)]
     
-    # Base case: A is a simplex
-    if is_simplex(K):
-        node = ProofNode(None, ordering.copy())
-        return [(ordering.copy(), node)]
-
-    # Base case: K is a single point
     if K.dimension() == 0:
         if len(K.vertices()) == 1:
             node = ProofNode(None, ordering.copy())
             return [(ordering.copy(), node)]
         else:
             return [(None, None)]
-
-    # Vertex selection strategies
+        
     vertices = get_vertices_by_strategy(K, strategy, rng=rng)
     for v in vertices:
         log_heartbeat("running")
 
-        del_K = delete_vertex(K, v)
-        if not has_trivial_homology(del_K):
+        del_k = delete_vertex(K, v)
+        if not has_trivial_homology(del_k):
             continue
-        print(f"Found potential Vertex: {v}", flush=True)
-        del_result = is_nonevasive(del_K, [], depth + 1, strategy=strategy, rng=rng)
+        print(f"Found Potential Vertex: {v}", flush=True)
+        
+        del_result = is_nonevasive(del_k, [], depth + 1, strategy=strategy, rng=rng)
         if not del_result or del_result[0][0] is None:
             continue
 
@@ -194,7 +183,6 @@ def is_nonevasive(K, ordering=None, depth=0, strategy="greedy", context_path=(),
         if not link_result or link_result[0][0] is None:
             continue
 
-        # Only use the first result for each (since only one tree needed)
         node = ProofNode(v, ordering.copy())
         node.link = link_result[0][1]
         node.deletion = del_result[0][1]
