@@ -63,6 +63,7 @@ docker compose run --rm \
   --entrypoint /bin/bash \
   -v "${LOG_DIR}:/outputs" \
   -e CSV_OUTPUT="${CSV_OUTPUT}" \
+  -e KNOT_NAME="${KNOT_NAME}" \
   ${FACETS_FILE:+-e FACETS_FILE="${RELATIVE_FACETS_PATH}"} \
   sagemath-runner -c "
     set -euo pipefail

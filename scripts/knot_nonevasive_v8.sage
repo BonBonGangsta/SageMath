@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, UTC
 from sage.topology.simplcial_complex import SimplicialComplex
 from sage.graphs.graph import Graph
 from pathlib import Path
-
+knot_name = os.environ.get("KNOT_NAME")
 # Seed
 seed_env = os.environ.get("RANDOM_SEED")
 if seed_env is not None:
@@ -30,7 +30,7 @@ if facets_file:
 K = SimplicialComplex(facets)
 
 # add csv capabilities
-CSV_OUTPUT = os.environ.get("CSV_OUTPUT", f"outputs/{seed_env}_{facets_file}")
+CSV_OUTPUT = os.environ.get("CSV_OUTPUT", f"outputs/{seed_env}_{knot_name}.csv")
 
 def export_proof_tree_to_csv(node, csv_path=CSV_OUTPUT):
     rows = []
@@ -71,9 +71,7 @@ class ProofNode:
         }
     
 # Headbeat logger
-facets_stem = Path(facets_file).stem
-CONTAINER_ID = os.environ.get("KNOT", facets_stem)
-HEARTBEAT_FILE = f"sage_heartbeat_{CONTAINER_ID}.log"
+HEARTBEAT_FILE = f"sage_heartbeat_{knot_name}.log"
 last_heartbeat = 0
 
 def log_heartbeat(status="running"):
@@ -85,7 +83,7 @@ def log_heartbeat(status="running"):
         payload = {
             "status": status,
             "timestamp": datetime.now(UTC).isoformat(),
-            "container_id": CONTAINER_ID
+            "container_id": knot_name
         }
         with open(HEARTBEAT_FILE, "a") as f:
             json.dump(payload, f)

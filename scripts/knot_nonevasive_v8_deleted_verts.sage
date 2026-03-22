@@ -7,6 +7,7 @@ import csv, ast, json, os
 
 seed_env = os.environ.get("RANDOM_SEED")
 facets_file = os.environ.get("FACETS_FILE")
+knot_name = os.environ.get("KNOT_NAME")
 
 def load_facets_from_file(path):
     with open(path, "r") as f:
@@ -39,7 +40,7 @@ DEL_VERTS = [41,50,105,159,161,288,333,340,389,426,446,564,589,646,
         431,432]
 
 # add csv capabilities
-CSV_OUTPUT = os.environ.get("CSV_OUTPUT", "outputs/nonevasive_tree.csv")
+CSV_OUTPUT = os.environ.get("CSV_OUTPUT", f"outputs/{knot_name}_nonevasive_tree.csv")
 
 def export_proof_tree_to_csv(node, csv_path=CSV_OUTPUT):
     """Write the proof tree (link/deletion branches) to a CSV."""
@@ -80,8 +81,7 @@ class ProofNode:
         }
 
 # Path for the heartbeat log, very useful for debugging and monitoring large knots
-CONTAINER_ID = os.environ.get("CONTAINER_ID", "default")
-HEARTBEAT_FILE = f"sage_heartbeat_{CONTAINER_ID}.log"
+HEARTBEAT_FILE = f"sage_heartbeat_{knot_name}.log"
 last_heartbeat = 0  # Initialize globally
 
 def log_heartbeat(status="running"):
@@ -93,7 +93,7 @@ def log_heartbeat(status="running"):
         payload = {
             "status": status,
             "timestamp": datetime.now(UTC).isoformat(),
-            "container_id": CONTAINER_ID
+            "container_id": knot_name
         }
         with open(HEARTBEAT_FILE, "a") as f:
             json.dump(payload, f)

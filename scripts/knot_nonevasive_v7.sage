@@ -7,6 +7,7 @@ import csv, ast, json, os
 
 seed_env = os.environ.get("RANDOM_SEED")
 facets_file = os.environ.get("FACETS_FILE")
+knot_name = os.environ.get("KNOT_NAME")
 
 def load_facets_from_file(path):
     with open(path, "r") as f:
@@ -24,7 +25,7 @@ if facets_file:
 K = SimplicialComplex(facets)
 
 # add csv capabilities
-CSV_OUTPUT = os.environ.get("CSV_OUTPUT", "outputs/homology_nonevasive.csv")
+CSV_OUTPUT = os.environ.get("CSV_OUTPUT", f"outputs/{knot_name}_nonevasive.csv")
 
 def export_proof_tree_to_csv(node, csv_path=CSV_OUTPUT):
     """Write the proof tree (link/deletion branches) to a CSV."""
@@ -65,8 +66,7 @@ class ProofNode:
         }
 
 # Path for the heartbeat log, very useful for debugging and monitoring large knots
-CONTAINER_ID = os.environ.get("KNOT", "Knot")
-HEARTBEAT_FILE = f"sage_heartbeat_{CONTAINER_ID}.log"
+HEARTBEAT_FILE = f"sage_heartbeat_{knot_name}.log"
 last_heartbeat = 0  # Initialize globally
 
 def log_heartbeat(status="running"):
@@ -78,7 +78,7 @@ def log_heartbeat(status="running"):
         payload = {
             "status": status,
             "timestamp": datetime.now(UTC).isoformat(),
-            "container_id": CONTAINER_ID
+            "container_id": knot_name
         }
         with open(HEARTBEAT_FILE, "a") as f:
             json.dump(payload, f)
@@ -158,10 +158,6 @@ def is_nonevasive(K, ordering=None, depth=0, strategy="greedy", context_path=(),
 
     if ordering is None:
         ordering = []
-
-    # Early Prune: nontrivial homology, cause apparently that's important now
-    #if not has_trivial_homology(K):
-    #    return [(None, None)]
     
     # Base case: A is a simplex
     if is_simplex(K):
@@ -184,7 +180,6 @@ def is_nonevasive(K, ordering=None, depth=0, strategy="greedy", context_path=(),
         del_K = delete_vertex(K, v)
         if not has_trivial_homology(del_K):
             continue
-        print(f"Found potential Vertex: {v}", flush=True)
         del_result = is_nonevasive(del_K, [], depth + 1, strategy=strategy, rng=rng)
         if not del_result or del_result[0][0] is None:
             continue

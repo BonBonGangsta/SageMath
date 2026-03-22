@@ -13,7 +13,7 @@ tail -n +2 "$CSV_FILE" | while IFS=, read -r ID KNOT SCRIPT_PATH FACET_FILE; do
     out="${name}.out"
     echo "Starting $name..."
     if [[ -n "$FACET_FILE" ]]; then
-        FACETS_FILE="$FACET_FILE" nohup "$SCRIPT" "$name" "$SCRIPT_PATH" >"$out" 2>&1 &
+        FACETS_FILE="$FACET_FILE" KNOT_NAME="$KNOT" nohup "$SCRIPT" "$name" "$SCRIPT_PATH" >"$out" 2>&1 &
     else
         nohup "$SCRIPT" "$name" "$SCRIPT_PATH" 2>&1 &
     fi
