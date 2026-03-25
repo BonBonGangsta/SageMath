@@ -14,6 +14,7 @@ fi
 KNOT_NAME=${1:-}
 SCRIPT_FILE=${2:-}
 FACETS_FILE=${3:-${FACETS_FILE:-}}
+PROTECTIVE_FACETS=${4:-}
 CSV_OUTPUT="outputs/${KNOT_NAME}_tree.csv"
 
 if [[ -z "${SCRIPT_FILE}" ]]; then
@@ -64,6 +65,7 @@ docker compose run --rm \
   -v "${LOG_DIR}:/outputs" \
   -e CSV_OUTPUT="${CSV_OUTPUT}" \
   -e KNOT_NAME="${KNOT_NAME}" \
+  -e PROTECTIVE_FACETS="${PROTECTIVE_FACETS}" \
   ${FACETS_FILE:+-e FACETS_FILE="${RELATIVE_FACETS_PATH}"} \
   sagemath-runner -c "
     set -euo pipefail
