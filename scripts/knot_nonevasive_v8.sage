@@ -77,6 +77,7 @@ v_counter = 0
 
 def log_heartbeat(status="running"):
     global last_heartbeat
+    global v_counter
     now = time.time()
     # Write hearbeat every day
     if now - last_heartbeat >= 86400 or status != "running":

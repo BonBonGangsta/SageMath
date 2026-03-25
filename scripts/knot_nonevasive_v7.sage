@@ -68,9 +68,11 @@ class ProofNode:
 # Path for the heartbeat log, very useful for debugging and monitoring large knots
 HEARTBEAT_FILE = f"sage_heartbeat_{knot_name}.log"
 last_heartbeat = 0  # Initialize globally
+v_counter = 0
 
 def log_heartbeat(status="running"):
     global last_heartbeat
+    global v_counter
     now = time.time()
     # Write heartbeat every hour
     if now - last_heartbeat >= 86400 or status != "running":
@@ -78,7 +80,8 @@ def log_heartbeat(status="running"):
         payload = {
             "status": status,
             "timestamp": datetime.now(UTC).isoformat(),
-            "container_id": knot_name
+            "container_id": knot_name,
+            "vertices_visited": v_counter
         }
         with open(HEARTBEAT_FILE, "a") as f:
             json.dump(payload, f)
@@ -155,7 +158,7 @@ def has_trivial_homology(K):
 
 # Recursive function to check nonevasiveness
 def is_nonevasive(K, ordering=None, depth=0, strategy="greedy", context_path=(), mode=None, rng=None):
-
+    global v_counter
     if ordering is None:
         ordering = []
     
@@ -175,6 +178,7 @@ def is_nonevasive(K, ordering=None, depth=0, strategy="greedy", context_path=(),
     # Vertex selection strategies
     vertices = get_vertices_by_strategy(K, strategy, rng=rng)
     for v in vertices:
+        v_counter += 1
         log_heartbeat("running")
 
         del_K = delete_vertex(K, v)
