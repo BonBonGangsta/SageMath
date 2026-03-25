@@ -73,6 +73,7 @@ class ProofNode:
 # Headbeat logger
 HEARTBEAT_FILE = f"sage_heartbeat_{knot_name}.log"
 last_heartbeat = 0
+v_counter = 0
 
 def log_heartbeat(status="running"):
     global last_heartbeat
@@ -83,7 +84,8 @@ def log_heartbeat(status="running"):
         payload = {
             "status": status,
             "timestamp": datetime.now(UTC).isoformat(),
-            "container_id": knot_name
+            "container_id": knot_name,
+            "vertices_visited": v_counter
         }
         with open(HEARTBEAT_FILE, "a") as f:
             json.dump(payload, f)
@@ -153,6 +155,7 @@ def has_trivial_homology(K):
     return all(h.order() == 1 for h in hom.values())
 
 def is_nonevasive(K, ordering=None, depth=0, strategy="random", context_path=(), mode=None, rng=None):
+    global v_counter
     if ordering is None:
         ordering = []
     
@@ -165,6 +168,7 @@ def is_nonevasive(K, ordering=None, depth=0, strategy="random", context_path=(),
         
     vertices = get_vertices_by_strategy(K, strategy, rng=rng)
     for v in vertices:
+        v_counter += 1
         log_heartbeat("running")
 
         del_k = delete_vertex(K, v)
