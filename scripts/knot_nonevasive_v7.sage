@@ -81,7 +81,7 @@ def log_heartbeat(status="running"):
             "status": status,
             "timestamp": datetime.now(UTC).isoformat(),
             "container_id": knot_name,
-            "vertices_visited": v_counter
+            "vertices_visited": int(v_counter)
         }
         with open(HEARTBEAT_FILE, "a") as f:
             json.dump(payload, f)

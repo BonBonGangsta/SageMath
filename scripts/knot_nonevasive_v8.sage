@@ -2,7 +2,7 @@ import random
 import time
 import csv, ast, json, os
 from datetime import datetime, timedelta, UTC
-from sage.topology.simplcial_complex import SimplicialComplex
+from sage.topology.simplicial_complex import SimplicialComplex
 from sage.graphs.graph import Graph
 from pathlib import Path
 knot_name = os.environ.get("KNOT_NAME")
@@ -86,7 +86,7 @@ def log_heartbeat(status="running"):
             "status": status,
             "timestamp": datetime.now(UTC).isoformat(),
             "container_id": knot_name,
-            "vertices_visited": v_counter
+            "vertices_visited": int(v_counter)
         }
         with open(HEARTBEAT_FILE, "a") as f:
             json.dump(payload, f)
@@ -172,11 +172,7 @@ def is_nonevasive(K, ordering=None, depth=0, strategy="random", context_path=(),
         v_counter += 1
         log_heartbeat("running")
 
-        del_k = delete_vertex(K, v)
-        if not has_trivial_homology(del_k):
-            continue
-        print(f"Found Potential Vertex: {v}", flush=True)
-        
+        del_k = delete_vertex(K, v)        
         del_result = is_nonevasive(del_k, [], depth + 1, strategy=strategy, rng=rng)
         if not del_result or del_result[0][0] is None:
             continue
