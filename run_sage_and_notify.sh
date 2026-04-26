@@ -60,7 +60,7 @@ LOG_DIR="${SCRIPT_DIR}/outputs"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/${KNOT_NAME}.log"
 
-docker compose run --rm \
+sudo docker compose run --rm \
   --entrypoint /bin/bash \
   -v "${LOG_DIR}:/outputs" \
   -e CSV_OUTPUT="${CSV_OUTPUT}" \

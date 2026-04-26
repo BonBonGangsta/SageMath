@@ -14,5 +14,3 @@ services:
             - ${LOG_PATH:-./logs}/sagemath:/heartbeats
         environment:
             LOG_PATH: ${LOG_PATH:-./logs}
-        mem_limit: 24g
-        cpus: 6
