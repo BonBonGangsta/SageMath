@@ -5,12 +5,14 @@ from datetime import datetime, timedelta, UTC
 from sage.topology.simplicial_complex import SimplicialComplex
 from sage.graphs.graph import Graph
 from pathlib import Path
+from collections import Counter
+
 knot_name = os.environ.get("KNOT_NAME")
 # Seed
 seed_env = os.environ.get("RANDOM_SEED")
 if seed_env is not None:
     seed = int(seed_env)
-else: 
+else:
     seed = random.SystemRandom().randrange(1_000_000_000)
 
 # Load Facets
@@ -22,7 +24,7 @@ def load_facets_from_file(path):
         return json.loads(text)
     except json.JSONDecodeError:
         return ast.literal_eval(text)
-    
+
 if facets_file:
     facets = load_facets_from_file(facets_file)
 
@@ -61,7 +63,7 @@ class ProofNode:
         self.context = tuple(context)
         self.link = None
         self.deletion = None
-    
+
     def to_dict(self):
         return {
             "vertex": self.vertex,
@@ -69,28 +71,48 @@ class ProofNode:
             "link": self.link.to_dict() if self.link else None,
             "deletion": self.deletion.to_dict() if self.deletion else None
         }
-    
+
 # Headbeat logger
-HEARTBEAT_FILE = f"sage_heartbeat_{knot_name}.log"
+HEARTBEAT_MODE = os.environ.get("HEARTBEAT_MODE", "stdout").lower()
+HEARTBEAT_INTERVAL_SECONDS = int(os.environ.get("HEARTBEAT_INTERVAL_SECONDS", "86400"))
+
+# Only used when HEARTBEAT_MODE=file
+HEARTBEAT_FILE = os.environ.get("HEARTBEAT_FILE", f"/outputs/heartbeat_{knot_name}.log")
+
 last_heartbeat = 0
 v_counter = 0
 
 def log_heartbeat(status="running"):
     global last_heartbeat
     global v_counter
+
     now = time.time()
-    # Write hearbeat every day
-    if now - last_heartbeat >= 86400 or status != "running":
-        last_heartbeat = now
-        payload = {
-            "status": status,
-            "timestamp": datetime.now(UTC).isoformat(),
-            "container_id": knot_name,
-            "vertices_visited": int(v_counter)
-        }
+
+    # Log heartbeat on interval, or always when status changes from running
+    if now - last_heartbeat < HEARTBEAT_INTERVAL_SECONDS and status == "running":
+        return
+
+    last_heartbeat = now
+
+    payload = {
+        "type": "heartbeat",
+        "status": status,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "container_id": knot_name,
+        "vertices_visited": int(v_counter),
+    }
+
+    if HEARTBEAT_MODE == "file":
+        heartbeat_dir = os.path.dirname(HEARTBEAT_FILE)
+
+        if heartbeat_dir:
+            os.makedirs(heartbeat_dir, exist_ok=True)
+
         with open(HEARTBEAT_FILE, "a") as f:
             json.dump(payload, f)
             f.write("\n")
+    else:
+        print(json.dumps(payload), flush=True)
 
 # Safe Deletion function build into SageMath
 def delete_vertex(K, v):
@@ -107,7 +129,7 @@ def is_simplex(K):
     # 0D: a single point?
     if dim == 0:
         return len(vertices) == 1
-    
+
     # 1D: a tree ( connected and acyclic graph)?
     if dim == 1:
         if any(len(f) > 2 for f in facets):
@@ -126,14 +148,14 @@ def is_simplex(K):
             return False
         maximal = [set(f) for f in K.facets()]
         return len(maximal) == 1 and maximal[0] == vertices
-    
+
     # 3D: a filled tetrahedron on exactly four vertices
     if dim == 3:
         if len(vertices) != 4:
             return False
         maximal = [set(f) for f in K.facets()]
         return len(maximal) == 1 and maximal[0] == vertices
-    
+
     return False
 
 def get_vertices_by_strategy(K, strategy="greedy", rng=None):
@@ -159,20 +181,20 @@ def is_nonevasive(K, ordering=None, depth=0, strategy="random", context_path=(),
     global v_counter
     if ordering is None:
         ordering = []
-    
+
     if K.dimension() == 0:
         if len(K.vertices()) == 1:
             node = ProofNode(None, ordering.copy())
             return [(ordering.copy(), node)]
         else:
             return [(None, None)]
-        
+
     vertices = get_vertices_by_strategy(K, strategy, rng=rng)
     for v in vertices:
         v_counter += 1
         log_heartbeat("running")
 
-        del_k = delete_vertex(K, v)        
+        del_k = delete_vertex(K, v)
         del_result = is_nonevasive(del_k, [], depth + 1, strategy=strategy, rng=rng)
         if not del_result or del_result[0][0] is None:
             continue
@@ -192,7 +214,7 @@ def is_nonevasive(K, ordering=None, depth=0, strategy="random", context_path=(),
 start_time = time.time()
 if seed_env is not None:
     seed = int(seed_env)
-else: 
+else:
     seed = random.SystemRandom().randrange(1_000_000_000)
 
 print(f"Using Seed: {seed}", flush=True)
