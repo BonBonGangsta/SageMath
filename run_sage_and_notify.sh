@@ -82,7 +82,7 @@ sudo docker compose run --rm \
     cp '${RELATIVE_SCRIPT_PATH}' \"\$tmp_file\"
     sage \"\$tmp_file\"
     rm -f \"\$tmp_file\"
-  " 2>&1"
+  " > "${LOG_FILE}" 2>&1
 
 
 SUMMARY_LINE=$(tail -n 2 "${LOG_FILE}")
