@@ -60,8 +60,7 @@ mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/${KNOT_NAME}.log"
 CSV_OUTPUT="outputs/${KNOT_NAME}_tree.csv"
 
-SAFE_KNOT_NAME=$(echo "${KNOT_NAME}" | tr -c ':alnum:]_.-' '_')
-CONTAINER_NAME="sagemath_${SAFE_KNOT_NAME}"
+CONTAINER_NAME="sagemath_${KNOT_NAME}"
 
 sudo docker compose run --rm \
   --name "${CONTAINER_NAME}" \
