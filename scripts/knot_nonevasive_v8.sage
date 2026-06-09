@@ -160,13 +160,23 @@ def is_simplex(K):
 
 def get_vertices_by_strategy(K, strategy="greedy", rng=None):
     if strategy == "greedy":
-        vertices = sorted(K.vertices(), key=lambda x: (len(K.link(x).facets()), x))
+        vertices = sorted(
+            K.vertices(),
+            key=lambda x: (len(K.link(x).facets()), x)
+        )
     elif strategy == "random":
         vertices = list(K.vertices())
         (rng or random).shuffle(vertices)
     elif strategy == "max_degree":
         vertex_count = Counter(v for f in K.facets() for v in f)
-        vertices = sorted(K.vertices(), key=lambda x: -vertex_count[x])
+        vertices = sorted(
+            K.vertices(),
+            key=lambda x: -vertex_count[x]
+        )
+    elif strategy == "lexical":
+        vertices = sorted(K.vertices())
+    elif strategy == "reverse_lexical":
+        vertices = sorted(K.vertices(), reverse=True)
     elif strategy == "exhaustive":
         vertices = list(K.vertices())
     else:
@@ -219,7 +229,7 @@ else:
 
 print(f"Using Seed: {seed}", flush=True)
 rng = random.Random(seed)
-result_paths = is_nonevasive(K, strategy="random", rng=rng)
+result_paths = is_nonevasive(K, strategy="lexical", rng=rng)
 print("\n" + "="*50, flush=True)
 if result_paths:
     path, node = result_paths[0]
