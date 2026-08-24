@@ -62,7 +62,7 @@ CSV_OUTPUT="outputs/${KNOT_NAME}_tree.csv"
 
 CONTAINER_NAME="sagemath_${KNOT_NAME}"
 
-sudo docker compose run --rm \
+docker compose run --rm \
   --name "${CONTAINER_NAME}" \
   --entrypoint /bin/bash \
   -v "${LOG_DIR}:/outputs" \
