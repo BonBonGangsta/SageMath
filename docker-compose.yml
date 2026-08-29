@@ -3,6 +3,7 @@ services:
     sagemath-runner:
         platform: linux/amd64
         image: sagemath-runner:latest
+        mem_limit: ${SAGE_MEMORY_LIMIT:-24g}
         env_file: .env
         build:
             context: .

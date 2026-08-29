@@ -62,6 +62,7 @@ CSV_OUTPUT="outputs/${KNOT_NAME}_tree.csv"
 
 CONTAINER_NAME="sagemath_${KNOT_NAME}"
 
+RUN_EXIT=0
 docker compose run --rm \
   --name "${CONTAINER_NAME}" \
   --entrypoint /bin/bash \
@@ -69,7 +70,8 @@ docker compose run --rm \
   -e CSV_OUTPUT="${CSV_OUTPUT}" \
   -e KNOT_NAME="${KNOT_NAME}" \
   -e HEARTBEAT_MODE="${HEARTBEAT_MODE:-stdout}" \
-  -e HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-86400}" \
+  -e HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-300}" \
+  -e WITNESS_CACHE_MAX_FAILURES="${WITNESS_CACHE_MAX_FAILURES:-500000}" \
   -e PROTECTIVE_FACETS="${PROTECTIVE_FACETS}" \
   ${FACETS_FILE:+-e FACETS_FILE="${RELATIVE_FACETS_PATH}"} \
   sagemath-runner -c "
@@ -81,11 +83,29 @@ docker compose run --rm \
     cp '${RELATIVE_SCRIPT_PATH}' \"\$tmp_file\"
     sage \"\$tmp_file\"
     rm -f \"\$tmp_file\"
-  " > "${LOG_FILE}" 2>&1
+  " > "${LOG_FILE}" 2>&1 || RUN_EXIT=$?
 
 
 SUMMARY_LINE=$(tail -n 2 "${LOG_FILE}")
 
+case "${RUN_EXIT}" in
+  0)
+    NOTIFICATION="✅ SageMath job complete for ${KNOT_NAME}. ${SUMMARY_LINE}"
+    ;;
+  137)
+    NOTIFICATION="🚨 SageMath job ${KNOT_NAME} was killed (exit 137; likely out of memory or an external SIGKILL). ${SUMMARY_LINE}"
+    ;;
+  *)
+    NOTIFICATION="❌ SageMath job ${KNOT_NAME} failed with exit ${RUN_EXIT}. ${SUMMARY_LINE}"
+    ;;
+esac
 
-curl -d "✅ SageMath job complete for ${KNOT_NAME}. ${SUMMARY_LINE}" \
-  "${NTFY_URL%/}/${NTFY_TOPIC}"
+CURL_EXIT=0
+curl -d "${NOTIFICATION}" \
+  "${NTFY_URL%/}/${NTFY_TOPIC}" || CURL_EXIT=$?
+
+if (( RUN_EXIT != 0 )); then
+  exit "${RUN_EXIT}"
+fi
+
+exit "${CURL_EXIT}"
