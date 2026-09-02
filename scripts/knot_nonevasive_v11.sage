@@ -89,7 +89,7 @@ class ProofNode:
 
 # Heartbeat logger
 HEARTBEAT_MODE = os.environ.get("HEARTBEAT_MODE", "stdout").lower()
-HEARTBEAT_INTERVAL_SECONDS = int(os.environ.get("HEARTBEAT_INTERVAL_SECONDS", "86400"))
+HEARTBEAT_INTERVAL_SECONDS = int(os.environ.get("HEARTBEAT_INTERVAL_SECONDS", "43200"))
 WITNESS_CACHE_MAX_FAILURES = int(
     os.environ.get("WITNESS_CACHE_MAX_FAILURES", "500000")
 )
@@ -813,7 +813,7 @@ else:
 
 print(f"Using Seed: {seed}", flush=True)
 rng = random.Random(seed)
-result_paths = is_nonevasive(K, strategy="max_degree", rng=rng)
+result_paths = is_nonevasive(K, strategy="random", rng=rng)
 print("\n" + "="*50, flush=True)
 final_result = "evasive"
 if result_paths:
