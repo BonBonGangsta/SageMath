@@ -1,0 +1,251 @@
+# Non-Evasive Search v12: Proposal and Change Record
+
+Date started: 2026-09-24  
+Development branch: `feature/nonevasive-v12`
+
+## Purpose
+
+This document records the proposed changes to the non-evasiveness search,
+the reason for each change, and the order in which the changes will be made.
+It is also intended to provide an audit trail for dissertation work.
+
+The central goals are:
+
+1. distinguish a proof from an incomplete or restricted search;
+2. produce independently verifiable certificates;
+3. improve performance without weakening mathematical correctness;
+4. preserve every historical implementation and its context.
+
+## Preservation policy
+
+- Versions `v1` through `v11` will not be deleted or rewritten.
+- New implementation work will begin in `knot_nonevasive_v12.sage`.
+- Historical scripts with known limitations will remain available as research
+  artifacts. Their limitations will be documented rather than silently fixed.
+- Each substantial stage should be committed separately so that it can be
+  reviewed, tested, reverted, or cited independently.
+- Search outputs used in research should record the input hash, Git commit,
+  SageMath version, configuration, strategy, and random seed.
+
+## Result semantics
+
+Version 12 should use explicit result states:
+
+| Result | Meaning |
+| --- | --- |
+| `NON_EVASIVE` | A valid non-evasive witness was found. |
+| `EVASIVE_CERTIFIED` | An unrestricted search or a sound obstruction produced a verifiable proof of evasiveness. |
+| `INCONCLUSIVE_RESTRICTED` | No witness was found under an explicitly restricted vertex policy. |
+| `INCONCLUSIVE_RESOURCE_LIMIT` | The search stopped because of time, memory, interruption, or another configured limit. |
+| `ERROR` | The input, configuration, or computation was invalid. |
+
+A heuristic failure must never be printed as `EVASIVE_CERTIFIED`.
+
+## Why result semantics come first
+
+Versions 9 through 11 avoid protected knot vertices while any unprotected
+vertices remain. This is useful as a witness-search heuristic, but it excludes
+otherwise valid decision trees. Exhausting that restricted search proves only
+that no witness satisfying the restriction was found.
+
+In v12, protected vertices will be a **soft ordering preference by default**:
+they will be placed after ordinary vertices but will still be tested. A strict
+protected mode may remain available for experiments, but failure in that mode
+will return `INCONCLUSIVE_RESTRICTED`.
+
+## Planned implementation stages
+
+### Stage 0: Establish the v12 baseline
+
+Status: planned
+
+- Copy v11 to a new `knot_nonevasive_v12.sage` file.
+- Leave v11 and all earlier versions unchanged.
+- Add a short version-history document or section describing what each version
+  attempted and which conclusions it can safely support.
+- Record the initial input, configuration, seed, and code revision in outputs.
+
+Validation gate:
+
+- Confirm that the unchanged v11 behavior can be reproduced from the v12
+  baseline on small examples before changing search logic.
+
+### Stage 1: Correct result classification and protected-vertex handling
+
+Status: recommended first implementation
+
+- Replace the single Boolean-style final result with the explicit result states
+  defined above.
+- Change protected vertices from an exclusion rule to a soft ordering rule.
+- Add an explicit restricted-search option for experiments that require it.
+- Distinguish a sound root obstruction from exhaustion of a restricted search.
+- Validate `FACETS_FILE` and other required inputs before constructing the
+  simplicial complex.
+- Use the actual generated seed, rather than the possibly absent environment
+  value, in output metadata and filenames.
+
+Validation gate:
+
+- A protected vertex must still appear among the candidates in ordinary mode.
+- Strict protected mode must return `INCONCLUSIVE_RESTRICTED` on failure.
+- A complex with nontrivial reduced homology may return
+  `EVASIVE_CERTIFIED` through that obstruction.
+- Known non-evasive examples must still return `NON_EVASIVE`.
+
+### Stage 2: Define a certificate format and add an independent verifier
+
+Status: planned
+
+- Store certificates as state DAGs rather than expanded trees.
+- Give every state a stable identifier.
+- For a non-evasive state, record the selected vertex and both successful child
+  states: deletion and link.
+- For an evasive state, record a failed child for every candidate vertex, or an
+  independently checkable terminal obstruction.
+- Record terminal reasons such as simplex, cone, tree, disconnected complex,
+  Euler-characteristic obstruction, or nontrivial homology.
+- Add a separate verifier that reconstructs each state from the original facets
+  and does not trust the search program's verdict.
+
+Validation gate:
+
+- Every emitted certificate must pass the independent verifier.
+- Deliberately corrupted vertices, branches, terminal reasons, and input hashes
+  must cause verification to fail.
+
+### Stage 3: Repair and simplify proof output
+
+Status: planned
+
+- Export the certificate once after the search finishes.
+- Remove repeated CSV rewrites from inside recursive tree printing.
+- Replace ambiguous depth-only CSV relationships with explicit node and parent
+  or child identifiers.
+- Stop describing the root winning vertex as a complete "deletion path"; the
+  mathematical witness is a branching decision tree or DAG.
+
+Validation gate:
+
+- Export time should be linear in the certificate DAG size.
+- Reloading the serialized certificate must preserve all child relationships.
+
+### Stage 4: Introduce a bitset search core
+
+Status: planned after correctness and verification
+
+- Assign one bit to each root vertex.
+- Store facets as integer masks.
+- Represent a search state using linked and deleted masks.
+- Perform common deletion, link, presence, and facet operations without
+  repeatedly constructing SageMath objects.
+- Materialize a Sage `SimplicialComplex` only when a Sage-specific topological
+  calculation is needed.
+
+Validation gate:
+
+- For a comprehensive collection of small complexes, bitset deletion and link
+  must exactly match SageMath deletion and link.
+- The bitset and v12 reference searches must return the same verdicts and
+  verifiable certificates.
+
+### Stage 5: Improve memoization and exploit symmetry
+
+Status: planned
+
+- Cache by normalized resulting complexes in addition to operation history.
+- Investigate canonical labeling of the vertex-facet incidence graph so that
+  isomorphic states can share results.
+- Compute automorphism orbits and branch on one representative per orbit when
+  the orbit computation is cheaper than the saved search.
+- Record orbit justifications in evasiveness certificates.
+
+Validation gate:
+
+- Turning symmetry reduction on or off must not change the mathematical result.
+- The verifier must confirm that orbit representatives cover every vertex.
+
+### Stage 6: Improve branching and obstruction scheduling
+
+Status: planned
+
+- Classify both immediate children cheaply before entering deep recursion.
+- Prefer vertices whose links are already simplices, trees, cones, or other
+  certified non-evasive terminal states.
+- Retain outer-layer, minimum-link, lexical, and seeded-random orderings as
+  ordering strategies rather than correctness restrictions.
+- Profile connectivity, Euler characteristic, GF(2) homology, small-prime
+  homology, and integral homology by time spent per rejected state.
+- Investigate certified non-collapsibility or discrete-Morse obstructions on
+  sufficiently small residual complexes.
+
+Validation gate:
+
+- Each rejection test must be mathematically one-sided and covered by a test.
+- Disabling an optimization must affect performance only, not the final result.
+
+### Stage 7: Add checkpoint and resume support
+
+Status: planned
+
+- Persist completed states, certificate fragments, and configuration metadata.
+- Refuse to resume if the input hash, code version, or correctness-affecting
+  configuration differs.
+- Distinguish a clean completed search from interruption or resource exhaustion.
+- Consider a disk-backed failure cache for long exact searches.
+
+Validation gate:
+
+- An interrupted and resumed small search must produce a certificate equivalent
+  to an uninterrupted run.
+
+### Stage 8: Add a regression and reference test suite
+
+Status: planned throughout all stages
+
+Include at least:
+
+- a point and filled simplices;
+- trees, a cycle, and disconnected zero-dimensional complexes;
+- cones over both non-evasive and evasive bases;
+- boundaries of simplices;
+- relabeled copies of every test complex;
+- cache-on/cache-off comparisons;
+- protected-preference and strict-restriction comparisons;
+- exhaustive comparison with a small independent reference implementation;
+- certificate serialization, verification, and corruption tests.
+
+## Related experimental scripts
+
+The homology deletion scripts remain useful for exploration, but trivial
+homology does not prove non-evasiveness. Testing deletions of one fixed size
+also does not replace the recursive link/deletion proof required for
+evasiveness.
+
+Partitionability, collapsibility, homological triviality, and non-evasiveness
+should be reported as distinct properties unless a specific theorem connects
+them for the complexes under study.
+
+## Batch concurrency decision
+
+No immediate change is planned for `batch_calculations.sh`.
+
+The batch launcher was intentionally created to start multiple smaller jobs,
+and current usage is limited manually to two simultaneous jobs per server.
+That is a reasonable operating procedure. If automated scheduling becomes
+useful later, an optional `MAX_PARALLEL` setting can be added without removing
+the existing ability to submit several jobs. This is lower priority than search
+correctness, certificates, and checkpointing.
+
+## Recommended immediate sequence
+
+1. Commit this proposal and preservation record.
+2. Create the untouched v12 baseline from v11.
+3. Implement Stage 1 only.
+4. Review and test Stage 1 before beginning certificate work.
+5. Implement each subsequent stage in a separate, reviewable commit.
+
+## Change log
+
+| Date | Branch | Change | Validation |
+| --- | --- | --- | --- |
+| 2026-09-24 | `feature/nonevasive-v12` | Created the v12 proposal and preservation plan. No search implementation changed. | Repository history and prior scripts preserved. |
