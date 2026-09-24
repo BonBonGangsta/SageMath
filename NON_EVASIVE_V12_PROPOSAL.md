@@ -103,7 +103,7 @@ Validation performed:
 
 ### Stage 2: Define a certificate format and add an independent verifier
 
-Status: Stage 2A completed on 2026-09-24; Stage 2B in progress
+Status: completed on 2026-09-24
 
 - Store certificates as state DAGs rather than expanded trees.
 - Give every state a stable identifier.
@@ -132,6 +132,22 @@ Stage 2A validation performed:
 - Verified the Rudin's-ball certificate, including all internal transitions.
 - Confirmed that corrupting the input hash causes verification to fail.
 - Reran all Stage 1 result-semantics tests successfully.
+
+Stage 2B validation performed:
+
+- Extended the proof store and JSON schema so every recursive evasive state
+  names one evasive child for every vertex in that state.
+- Extended the independent verifier to require exact vertex coverage, validate
+  every failed-child mask and transition, and recompute empty, non-tree,
+  disconnected, Euler-characteristic, and homology obstruction leaves.
+- Added a seven-vertex acyclic evasive regression complex whose certificate
+  requires recursive negative proof obligations rather than a root homology
+  rejection.
+- Verified its complete evasiveness certificate and confirmed that removing
+  one root vertex obligation causes verification to fail.
+- Confirmed that corrupted hashes, winning vertices, branch references, and
+  terminal reasons are rejected.
+- Reran the Stage 2A and Stage 1 suites successfully.
 
 ### Stage 3: Repair and simplify proof output
 
@@ -271,3 +287,4 @@ correctness, certificates, and checkpointing.
 | 2026-09-24 | `feature/nonevasive-v12` | Created the v12 proposal and preservation plan. No search implementation changed. | Repository history and prior scripts preserved. |
 | 2026-09-24 | `feature/nonevasive-v12` | Added the v12 baseline and Stage 1 result semantics, protected-vertex policies, input checks, fixtures, and tests. | Four focused Sage tests passed; Rudin's-ball smoke test returned `NON_EVASIVE`. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 2A: added positive certificate DAG export and an independent verifier. | Rudin's-ball certificate passed; a corrupted certificate was rejected; Stage 1 regression suite passed. |
+| 2026-09-24 | `feature/nonevasive-v12` | Stage 2B: added complete recursive evasiveness certificates and negative verification. | A recursive acyclic evasive certificate passed; incomplete vertex coverage and other corruptions were rejected; earlier suites passed. |

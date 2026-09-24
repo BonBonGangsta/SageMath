@@ -94,8 +94,8 @@ docker compose run --rm --entrypoint /bin/bash sagemath-runner \
   -c 'cd /workspace && tests/test_v12_stage1.sh'
 ```
 
-Successful v12 searches also write a versioned JSON proof certificate. Verify a
-certificate independently with:
+Conclusive v12 searches write a versioned JSON proof certificate for either
+`NON_EVASIVE` or `EVASIVE_CERTIFIED`. Verify a certificate independently with:
 
 ```bash
 docker compose run --rm --entrypoint /bin/bash sagemath-runner -c '

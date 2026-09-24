@@ -400,6 +400,26 @@ class CertificateStore:
             },
         )
 
+    def store_failure(self, state_key, failed_children):
+        record = {
+            "verdict": RESULT_EVASIVE_CERTIFIED,
+            "failed_children": [
+                {
+                    "vertex": int(failure["vertex"]),
+                    "branch": failure["branch"],
+                    "child": failure["child"],
+                }
+                for failure in failed_children
+            ],
+        }
+        existing = self._records.get(state_key)
+        if existing is None:
+            self._records[state_key] = record
+        elif existing.get("verdict") != RESULT_EVASIVE_CERTIFIED:
+            raise RuntimeError(
+                f"Conflicting certificate verdict for state {state_key}"
+            )
+
     def get(self, state_key):
         try:
             return self._records[state_key]
@@ -872,6 +892,7 @@ def find_nonevasive_witness(
         rng=rng,
         root_distances=root_distances,
     )
+    failed_children = []
     for v in vertices:
         search_stats.vertex_attempts += 1
         log_heartbeat("running")
@@ -901,6 +922,9 @@ def find_nonevasive_witness(
             is_link_state=True,
         ):
             search_stats.link_first_rejections += 1
+            failed_children.append(
+                {"vertex": v, "branch": "link", "child": link_state_key}
+            )
             continue
 
         del_k = delete_vertex(K, v)
@@ -918,6 +942,13 @@ def find_nonevasive_witness(
             depth=depth + 1,
             is_link_state=False,
         ):
+            failed_children.append(
+                {
+                    "vertex": v,
+                    "branch": "deletion",
+                    "child": deletion_state_key,
+                }
+            )
             continue
 
         witness_cache.store(state_key, True, v)
@@ -930,6 +961,7 @@ def find_nonevasive_witness(
         return True
 
     witness_cache.store(state_key, False, _NO_WINNING_VERTEX)
+    certificate_store.store_failure(state_key, failed_children)
     return False
 
 def build_proof_tree(
@@ -1029,7 +1061,7 @@ def serialize_certificate_state(state_key, record):
     }
     if "terminal_reason" in record:
         serialized["terminal_reason"] = record["terminal_reason"]
-    else:
+    elif record["verdict"] == RESULT_NON_EVASIVE:
         serialized.update(
             {
                 "winning_vertex": record["winning_vertex"],
@@ -1039,7 +1071,49 @@ def serialize_certificate_state(state_key, record):
                 "link_child": certificate_state_id(record["link_child"]),
             }
         )
+    else:
+        serialized["failed_children"] = [
+            {
+                "vertex": failure["vertex"],
+                "branch": failure["branch"],
+                "child": certificate_state_id(failure["child"]),
+            }
+            for failure in record["failed_children"]
+        ]
     return serialized
+
+
+def build_certificate_document(
+    K, vertex_bits, certificate_kind, result, states
+):
+    vertex_order = [
+        int(vertex)
+        for vertex in sorted(vertex_bits, key=lambda item: vertex_bits[item])
+    ]
+    return {
+        "format": "simplicial_nonevasiveness_certificate",
+        "schema_version": int(1),
+        "certificate_kind": certificate_kind,
+        "result": result,
+        "root_state": certificate_state_id((int(0), int(0))),
+        "input": {
+            "canonical_facets_sha256": canonical_complex_sha256(K),
+            "facet_count": len(K.facets()),
+            "vertex_count": len(K.vertices()),
+            "vertex_order": vertex_order,
+            "source": str(facets_file),
+        },
+        "run": {
+            "knot_name": knot_name,
+            "seed": int(seed),
+            "strategy": search_stats.strategy,
+            "protected_vertices": sorted(PROTECTED_VERTICES),
+            "protected_vertex_policy": PROTECTED_VERTEX_POLICY,
+            "git_revision": current_git_revision(),
+            "sage_version": current_sage_version(),
+        },
+        "states": states,
+    }
 
 
 def build_nonevasive_certificate(K, certificate_store, vertex_bits):
@@ -1065,34 +1139,47 @@ def build_nonevasive_certificate(K, certificate_store, vertex_bits):
             pending.append(record["link_child"])
 
     states.sort(key=lambda state: state["id"])
-    vertex_order = [
-        int(vertex)
-        for vertex in sorted(vertex_bits, key=lambda item: vertex_bits[item])
-    ]
-    return {
-        "format": "simplicial_nonevasiveness_certificate",
-        "schema_version": int(1),
-        "certificate_kind": "non_evasive",
-        "result": RESULT_NON_EVASIVE,
-        "root_state": certificate_state_id(root_state_key),
-        "input": {
-            "canonical_facets_sha256": canonical_complex_sha256(K),
-            "facet_count": len(K.facets()),
-            "vertex_count": len(K.vertices()),
-            "vertex_order": vertex_order,
-            "source": str(facets_file),
-        },
-        "run": {
-            "knot_name": knot_name,
-            "seed": int(seed),
-            "strategy": search_stats.strategy,
-            "protected_vertices": sorted(PROTECTED_VERTICES),
-            "protected_vertex_policy": PROTECTED_VERTEX_POLICY,
-            "git_revision": current_git_revision(),
-            "sage_version": current_sage_version(),
-        },
-        "states": states,
-    }
+    return build_certificate_document(
+        K,
+        vertex_bits,
+        "non_evasive",
+        RESULT_NON_EVASIVE,
+        states,
+    )
+
+
+def build_evasive_certificate(K, certificate_store, vertex_bits):
+    """Build the reachable negative proof DAG rooted at the initial state."""
+    root_state_key = (int(0), int(0))
+    pending = [root_state_key]
+    visited = set()
+    states = []
+
+    while pending:
+        state_key = pending.pop()
+        if state_key in visited:
+            continue
+        visited.add(state_key)
+        record = certificate_store.get(state_key)
+        if record["verdict"] != RESULT_EVASIVE_CERTIFIED:
+            raise RuntimeError(
+                "An evasiveness certificate references a non-evasive state"
+            )
+        states.append(serialize_certificate_state(state_key, record))
+        if "terminal_reason" not in record:
+            pending.extend(
+                failure["child"]
+                for failure in record["failed_children"]
+            )
+
+    states.sort(key=lambda state: state["id"])
+    return build_certificate_document(
+        K,
+        vertex_bits,
+        "evasive",
+        RESULT_EVASIVE_CERTIFIED,
+        states,
+    )
 
 
 def write_certificate(document, path):
@@ -1173,6 +1260,19 @@ if final_result == RESULT_NON_EVASIVE:
         certificate_document, CERTIFICATE_OUTPUT
     )
     print(f"Certificate: {certificate_path}", flush=True)
+elif final_result == RESULT_EVASIVE_CERTIFIED:
+    certificate_document = build_evasive_certificate(
+        K, certificate_store, vertex_bits
+    )
+    certificate_path = write_certificate(
+        certificate_document, CERTIFICATE_OUTPUT
+    )
+    print(f"Certificate: {certificate_path}", flush=True)
+else:
+    print(
+        "Certificate: not emitted for an inconclusive restricted search",
+        flush=True,
+    )
 
 print("=== Search Statistics ===", flush=True)
 print(f"Vertex attempts: {search_stats.vertex_attempts:,}", flush=True)

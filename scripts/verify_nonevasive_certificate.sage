@@ -1,4 +1,4 @@
-"""Independently verify a v12 non-evasiveness certificate.
+"""Independently verify a v12 non-evasiveness or evasiveness certificate.
 
 Usage:
     sage scripts/verify_nonevasive_certificate.sage FACETS CERTIFICATE
@@ -10,6 +10,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from sage.all import GF, ZZ
 from sage.topology.simplicial_complex import SimplicialComplex
 
 
@@ -120,6 +121,39 @@ def verify_success_terminal(K, reason):
         raise VerificationError(f"Terminal claim is false: {reason}")
 
 
+def homology_group_is_trivial(group, ring_name):
+    if ring_name == "ZZ":
+        return len(group.invariants()) == 0
+    return int(group.dimension()) == 0
+
+
+def has_nontrivial_reduced_homology(K, base_ring, ring_name):
+    homology = K.homology(reduced=True, base_ring=base_ring)
+    return any(
+        not homology_group_is_trivial(group, ring_name)
+        for group in homology.values()
+    )
+
+
+def verify_failure_terminal(K, reason):
+    if reason == "empty_complex":
+        valid = not K.vertices()
+    elif reason == "one_dimensional_not_tree":
+        valid = K.dimension() == 1 and not is_tree_complex(K)
+    elif reason == "disconnected":
+        valid = bool(K.vertices()) and not K.is_connected()
+    elif reason == "euler_characteristic_not_one":
+        valid = K.euler_characteristic() != 1
+    elif reason == "nontrivial_homology_ZZ":
+        valid = has_nontrivial_reduced_homology(K, ZZ, "ZZ")
+    elif reason == "nontrivial_homology_GF2":
+        valid = has_nontrivial_reduced_homology(K, GF(2), "GF2")
+    else:
+        raise VerificationError(f"Unknown negative terminal reason: {reason}")
+    if not valid:
+        raise VerificationError(f"Terminal claim is false: {reason}")
+
+
 def verify_certificate(facets_path, certificate_path):
     root = SimplicialComplex(load_facets(facets_path))
     with Path(certificate_path).open(encoding="utf-8") as certificate_file:
@@ -129,12 +163,16 @@ def verify_certificate(facets_path, certificate_path):
         raise VerificationError("Unknown certificate format")
     if document.get("schema_version") != 1:
         raise VerificationError("Unsupported certificate schema version")
-    if document.get("certificate_kind") != "non_evasive":
-        raise VerificationError(
-            "This verifier stage accepts non-evasive certificates only"
-        )
-    if document.get("result") != "NON_EVASIVE":
-        raise VerificationError("Certificate result is not NON_EVASIVE")
+    certificate_kind = document.get("certificate_kind")
+    expected_results = {
+        "non_evasive": "NON_EVASIVE",
+        "evasive": "EVASIVE_CERTIFIED",
+    }
+    if certificate_kind not in expected_results:
+        raise VerificationError("Unknown certificate kind")
+    expected_root_verdict = expected_results[certificate_kind]
+    if document.get("result") != expected_root_verdict:
+        raise VerificationError("Certificate kind and result disagree")
 
     input_record = document.get("input")
     if not isinstance(input_record, dict):
@@ -178,19 +216,19 @@ def verify_certificate(facets_path, certificate_path):
     verified = set()
     active = set()
 
-    def verify_state(identifier):
+    def verify_state(identifier, expected_verdict):
+        if identifier not in states:
+            raise VerificationError(f"Referenced state is missing: {identifier}")
+        record = states[identifier]
+        if record.get("verdict") != expected_verdict:
+            raise VerificationError(
+                f"State {identifier} has the wrong child verdict"
+            )
         if identifier in verified:
             return
         if identifier in active:
             raise VerificationError("Certificate state graph contains a cycle")
-        if identifier not in states:
-            raise VerificationError(f"Referenced state is missing: {identifier}")
         active.add(identifier)
-        record = states[identifier]
-        if record.get("verdict") != "NON_EVASIVE":
-            raise VerificationError(
-                f"Positive proof references a non-success state: {identifier}"
-            )
         linked_mask, deleted_mask = record["_state_key"]
         K = reconstruct_state(
             root, linked_mask, deleted_mask, vertex_order
@@ -198,8 +236,11 @@ def verify_certificate(facets_path, certificate_path):
 
         terminal_reason = record.get("terminal_reason")
         if terminal_reason is not None:
-            verify_success_terminal(K, terminal_reason)
-        else:
+            if expected_verdict == "NON_EVASIVE":
+                verify_success_terminal(K, terminal_reason)
+            else:
+                verify_failure_terminal(K, terminal_reason)
+        elif expected_verdict == "NON_EVASIVE":
             winning_vertex = record.get("winning_vertex")
             if type(winning_vertex) is not int or winning_vertex not in K.vertices():
                 raise VerificationError(
@@ -220,8 +261,8 @@ def verify_certificate(facets_path, certificate_path):
             if record.get("link_child") != expected_link:
                 raise VerificationError("Incorrect link child state")
 
-            verify_state(expected_deletion)
-            verify_state(expected_link)
+            verify_state(expected_deletion, "NON_EVASIVE")
+            verify_state(expected_link, "NON_EVASIVE")
 
             deletion_record = states[expected_deletion]
             link_record = states[expected_link]
@@ -239,14 +280,75 @@ def verify_certificate(facets_path, certificate_path):
                 K.link([winning_vertex])
             ):
                 raise VerificationError("Link transition is incorrect")
+        else:
+            failed_children = record.get("failed_children")
+            if not isinstance(failed_children, list):
+                raise VerificationError(
+                    f"Evasive state lacks failed children: {identifier}"
+                )
+            current_vertices = {int(vertex) for vertex in K.vertices()}
+            failures_by_vertex = {}
+            for failure in failed_children:
+                if not isinstance(failure, dict):
+                    raise VerificationError("Malformed failed-child record")
+                vertex = failure.get("vertex")
+                branch = failure.get("branch")
+                if type(vertex) is not int or vertex not in current_vertices:
+                    raise VerificationError("Invalid failed-child vertex")
+                if vertex in failures_by_vertex:
+                    raise VerificationError(
+                        f"Vertex {vertex} is repeated in an evasive state"
+                    )
+                if branch not in {"deletion", "link"}:
+                    raise VerificationError("Invalid failed-child branch")
+                failures_by_vertex[vertex] = failure
+
+                vertex_bit = vertex_bits[vertex]
+                if (linked_mask | deleted_mask) & vertex_bit:
+                    raise VerificationError(
+                        "Failed-child vertex was already decided"
+                    )
+                if branch == "deletion":
+                    child_key = (
+                        linked_mask,
+                        deleted_mask | vertex_bit,
+                    )
+                    expected_K = delete_vertex(K, vertex)
+                else:
+                    child_key = (
+                        linked_mask | vertex_bit,
+                        deleted_mask,
+                    )
+                    expected_K = K.link([vertex])
+                child_id = state_id(*child_key)
+                if failure.get("child") != child_id:
+                    raise VerificationError("Incorrect failed-child state")
+
+                verify_state(child_id, "EVASIVE_CERTIFIED")
+                child_record = states[child_id]
+                child_K = reconstruct_state(
+                    root, *child_record["_state_key"], vertex_order
+                )
+                if canonical_facets(child_K) != canonical_facets(expected_K):
+                    raise VerificationError(
+                        f"{branch.capitalize()} transition is incorrect"
+                    )
+
+            if set(failures_by_vertex) != current_vertices:
+                missing = sorted(current_vertices - set(failures_by_vertex))
+                extra = sorted(set(failures_by_vertex) - current_vertices)
+                raise VerificationError(
+                    "Evasive state does not cover every vertex; "
+                    f"missing={missing}, extra={extra}"
+                )
 
         active.remove(identifier)
         verified.add(identifier)
 
-    verify_state(root_id)
+    verify_state(root_id, expected_root_verdict)
     if verified != set(states):
         raise VerificationError("Certificate contains unreachable state records")
-    return len(verified)
+    return (expected_root_verdict, len(verified))
 
 
 def main():
@@ -255,10 +357,10 @@ def main():
     parser.add_argument("certificate", type=Path)
     args = parser.parse_args()
     try:
-        state_count = verify_certificate(args.facets, args.certificate)
+        result, state_count = verify_certificate(args.facets, args.certificate)
     except (OSError, ValueError, VerificationError) as exc:
         raise SystemExit(f"CERTIFICATE_INVALID: {exc}")
-    print(f"CERTIFICATE_VALID: NON_EVASIVE; states={state_count}")
+    print(f"CERTIFICATE_VALID: {result}; states={state_count}")
 
 
 if __name__ == "__main__":
