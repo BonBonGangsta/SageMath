@@ -131,3 +131,44 @@ docker compose run --rm --entrypoint /bin/bash sagemath-runner \
 Sage links and deletions from the root and is retained for correctness testing,
 not for long searches. The chosen engine is recorded in heartbeats,
 certificates, and final statistics.
+
+## Bounded v12 Searches and Benchmarks
+
+Set either limit to a positive value to bound a search. Zero disables that
+limit:
+
+```bash
+SEARCH_STATE_LIMIT=50000 \
+SEARCH_TIME_LIMIT_SECONDS=3600 \
+./run_sage_and_notify.sh \
+  example \
+  scripts/knot_nonevasive_v12.sage \
+  knots/example.txt
+```
+
+A limit stop returns `INCONCLUSIVE_RESOURCE_LIMIT` and does not emit a proof
+certificate. The time limit is cooperative: it is checked between search
+operations and before homology, but it cannot interrupt one SageMath operation
+that is already running. A bounded stop does not yet preserve resumable search
+state; checkpoint/resume remains planned for Stage 7.
+
+Compare the bitset and Sage-reference engines sequentially with identical
+limits and seed using:
+
+```bash
+docker compose run --rm --entrypoint /bin/bash \
+  -e BENCHMARK_STATE_LIMIT=50000 \
+  -e BENCHMARK_TIME_LIMIT_SECONDS=3600 \
+  -e RANDOM_SEED=123456 \
+  -e PROTECTED_VERTICES='[1, 2, 3]' \
+  sagemath-runner -c '
+    cd /workspace
+    bash benchmarks/run_v12_engine_benchmark.sh \
+      knots/rudins_ball.txt rudins_ball
+  '
+```
+
+Each benchmark creates a new timestamped directory under
+`outputs/benchmarks/`, refuses to overwrite an existing run, executes the two
+engines one at a time, and writes `summary.tsv`, logs, and any independently
+verified conclusive certificates.

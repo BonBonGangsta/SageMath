@@ -8,7 +8,7 @@ restricted search is reported as inconclusive rather than evasive.
 import random
 import time
 import resource
-import ast, hashlib, json, os, subprocess, sys
+import ast, hashlib, json, math, os, subprocess, sys
 from datetime import datetime, timedelta, UTC
 from sage.all import GF, ZZ
 from sage.topology.simplicial_complex import SimplicialComplex
@@ -76,6 +76,7 @@ K = SimplicialComplex(facets)
 RESULT_NON_EVASIVE = "NON_EVASIVE"
 RESULT_EVASIVE_CERTIFIED = "EVASIVE_CERTIFIED"
 RESULT_INCONCLUSIVE_RESTRICTED = "INCONCLUSIVE_RESTRICTED"
+RESULT_INCONCLUSIVE_RESOURCE_LIMIT = "INCONCLUSIVE_RESOURCE_LIMIT"
 
 
 def load_protected_vertices(raw_value):
@@ -145,6 +146,19 @@ STATE_ENGINE = os.environ.get("STATE_ENGINE", "bitset").strip().lower()
 VALID_STATE_ENGINES = frozenset({"bitset", "sage_reference"})
 if STATE_ENGINE not in VALID_STATE_ENGINES:
     raise ValueError("STATE_ENGINE must be one of: bitset, sage_reference")
+SEARCH_STATE_LIMIT = int(os.environ.get("SEARCH_STATE_LIMIT", "0"))
+SEARCH_TIME_LIMIT_SECONDS = float(
+    os.environ.get("SEARCH_TIME_LIMIT_SECONDS", "0")
+)
+if SEARCH_STATE_LIMIT < 0:
+    raise ValueError("SEARCH_STATE_LIMIT cannot be negative")
+if (
+    not math.isfinite(SEARCH_TIME_LIMIT_SECONDS)
+    or SEARCH_TIME_LIMIT_SECONDS < 0
+):
+    raise ValueError(
+        "SEARCH_TIME_LIMIT_SECONDS must be a finite nonnegative number"
+    )
 
 
 def get_boolean_environment_setting(name, default):
@@ -210,6 +224,19 @@ _CACHE_MISS = object()
 _NO_WINNING_VERTEX = object()
 
 
+class SearchResourceLimitReached(RuntimeError):
+    """Internal control flow for a sound, explicitly inconclusive stop."""
+
+    def __init__(self, kind, configured_limit, observed_value):
+        self.kind = kind
+        self.configured_limit = configured_limit
+        self.observed_value = observed_value
+        super().__init__(
+            f"{kind} reached: configured={configured_limit}, "
+            f"observed={observed_value}"
+        )
+
+
 def get_memory_usage_mib():
     """Return current and peak resident memory on the Linux Sage runner."""
     current_rss_mib = None
@@ -243,6 +270,7 @@ class SearchStats:
         self.strategy = strategy
         self.phase = "search"
         self.started_at = time.time()
+        self.started_monotonic = time.monotonic()
         self.vertex_attempts = 0
         self.recursive_calls = 0
         self.subcomplexes_examined = 0
@@ -259,6 +287,9 @@ class SearchStats:
         self.link_first_rejections = 0
         self.sage_state_materializations = 0
         self.bitset_state_reconstructions = 0
+        self.resource_limit_kind = None
+        self.resource_limit_configured = None
+        self.resource_limit_observed = None
         self.homology_zz_calls = 0
         self.homology_gf2_calls = 0
         self.homology_zz_seconds = 0.0
@@ -466,6 +497,11 @@ def log_heartbeat(
         "container_id": knot_name,
         "strategy": search_stats.strategy,
         "state_engine": STATE_ENGINE,
+        "search_state_limit": int(SEARCH_STATE_LIMIT),
+        "search_time_limit_seconds": float(SEARCH_TIME_LIMIT_SECONDS),
+        "resource_limit_kind": search_stats.resource_limit_kind,
+        "resource_limit_configured": search_stats.resource_limit_configured,
+        "resource_limit_observed": search_stats.resource_limit_observed,
         "protected_vertex_policy": PROTECTED_VERTEX_POLICY,
         "protected_vertices": sorted(PROTECTED_VERTICES),
         "restricted_vertices_skipped": int(
@@ -772,7 +808,12 @@ def materialize_search_state(root_K, root_bitset, state_key):
         # This deliberately independent reference path replays Sage links and
         # deletions from the root. It remains available for equivalence tests,
         # not as the recommended engine for long searches.
-        root_bitset.state_facets(linked_mask, deleted_mask)
+        if linked_mask & deleted_mask:
+            raise RuntimeError("Linked and deleted vertex masks overlap")
+        if (
+            linked_mask | deleted_mask
+        ) & ~root_bitset.all_vertices_mask:
+            raise RuntimeError("A state mask contains an unknown vertex bit")
         state = SimplicialComplex(root_K.facets())
         for index, vertex in enumerate(root_bitset.vertex_order):
             vertex_bit = int(1) << index
@@ -785,6 +826,42 @@ def materialize_search_state(root_K, root_bitset, state_key):
 
     search_stats.sage_state_materializations += 1
     return state
+
+
+def stop_for_resource_limit(kind, configured_limit, observed_value):
+    search_stats.resource_limit_kind = kind
+    search_stats.resource_limit_configured = configured_limit
+    search_stats.resource_limit_observed = observed_value
+    search_stats.phase = "resource_limit"
+    raise SearchResourceLimitReached(
+        kind, configured_limit, observed_value
+    )
+
+
+def enforce_search_time_limit():
+    """Cooperatively stop between search operations when time is exhausted."""
+    if SEARCH_TIME_LIMIT_SECONDS <= 0:
+        return
+    elapsed = time.monotonic() - search_stats.started_monotonic
+    if elapsed >= SEARCH_TIME_LIMIT_SECONDS:
+        stop_for_resource_limit(
+            "time_limit_seconds",
+            float(SEARCH_TIME_LIMIT_SECONDS),
+            float(elapsed),
+        )
+
+
+def enforce_search_state_limit_before_miss():
+    """Allow at most the configured number of cache-miss states."""
+    if (
+        SEARCH_STATE_LIMIT > 0
+        and search_stats.subcomplexes_examined >= SEARCH_STATE_LIMIT
+    ):
+        stop_for_resource_limit(
+            "state_limit",
+            int(SEARCH_STATE_LIMIT),
+            int(search_stats.subcomplexes_examined),
+        )
 
 def classify_nonevasive_state(K, depth=0, is_link_state=False):
     """Return ``(verdict, reason)``; verdict is None when search is needed."""
@@ -817,6 +894,10 @@ def classify_nonevasive_state(K, depth=0, is_link_state=False):
     if K.euler_characteristic() != 1:
         return (False, "euler_characteristic_not_one")
 
+    # The time limit is cooperative: check immediately before a potentially
+    # expensive homology call. A single Sage operation already in progress is
+    # not forcibly interrupted.
+    enforce_search_time_limit()
     homology_test = homology_test_for_state(K, depth, is_link_state)
     if homology_test is None:
         search_stats.homology_skipped += 1
@@ -858,14 +939,17 @@ def find_nonevasive_witness(
     """
     search_stats.recursive_calls += 1
     search_stats.deepest_path = max(search_stats.deepest_path, depth)
+    enforce_search_time_limit()
 
     cached = witness_cache.lookup(state_key)
     if cached is not _CACHE_MISS:
         search_stats.cache_hits += 1
         return cached[0]
 
+    enforce_search_state_limit_before_miss()
     search_stats.subcomplexes_examined += 1
     K = materialize_search_state(root_K, root_bitset, state_key)
+    enforce_search_time_limit()
     terminal_result, terminal_reason = classify_nonevasive_state(
         K, depth=depth, is_link_state=is_link_state
     )
@@ -881,14 +965,17 @@ def find_nonevasive_witness(
         )
         return terminal_result
 
+    enforce_search_time_limit()
     vertices = get_vertices_by_strategy(
         K,
         strategy,
         rng=rng,
         root_distances=root_distances,
     )
+    enforce_search_time_limit()
     failed_children = []
     for v in vertices:
+        enforce_search_time_limit()
         search_stats.vertex_attempts += 1
         log_heartbeat("running")
 
@@ -978,19 +1065,25 @@ def is_nonevasive(
         build_root_distances(K) if strategy == "outer_layer" else None
     )
 
-    verdict = find_nonevasive_witness(
-        K,
-        root_bitset,
-        witness_cache,
-        certificate_store,
-        vertex_bits,
-        strategy=strategy,
-        rng=rng,
-        root_distances=root_distances,
-        state_key=root_state_key,
-    )
-    search_stats.phase = "search_complete"
-    return (verdict, certificate_store, vertex_bits)
+    resource_limit = None
+    try:
+        verdict = find_nonevasive_witness(
+            K,
+            root_bitset,
+            witness_cache,
+            certificate_store,
+            vertex_bits,
+            strategy=strategy,
+            rng=rng,
+            root_distances=root_distances,
+            state_key=root_state_key,
+        )
+    except SearchResourceLimitReached as exc:
+        verdict = None
+        resource_limit = exc
+    else:
+        search_stats.phase = "search_complete"
+    return (verdict, certificate_store, vertex_bits, resource_limit)
 
 
 def serialize_certificate_state(state_key, record):
@@ -1050,6 +1143,10 @@ def build_certificate_document(
             "seed": int(seed),
             "strategy": search_stats.strategy,
             "state_engine": STATE_ENGINE,
+            "search_state_limit": int(SEARCH_STATE_LIMIT),
+            "search_time_limit_seconds": float(
+                SEARCH_TIME_LIMIT_SECONDS
+            ),
             "protected_vertices": sorted(PROTECTED_VERTICES),
             "protected_vertex_policy": PROTECTED_VERTEX_POLICY,
             "git_revision": current_git_revision(),
@@ -1145,11 +1242,22 @@ start_time = time.time()
 print(f"Using Seed: {seed}", flush=True)
 print(f"State engine: {STATE_ENGINE}", flush=True)
 rng = random.Random(seed)
-search_succeeded, certificate_store, vertex_bits = is_nonevasive(
-    K, strategy="random", rng=rng
-)
+(
+    search_succeeded,
+    certificate_store,
+    vertex_bits,
+    resource_limit,
+) = is_nonevasive(K, strategy="random", rng=rng)
 print("\n" + "="*50, flush=True)
-if search_succeeded:
+if resource_limit is not None:
+    final_result = RESULT_INCONCLUSIVE_RESOURCE_LIMIT
+    print(
+        "⚠️ The search reached a configured resource limit. "
+        "No mathematical conclusion was drawn.",
+        flush=True,
+    )
+    print(f"Resource limit reached: {resource_limit.kind}", flush=True)
+elif search_succeeded:
     final_result = RESULT_NON_EVASIVE
     root_record = certificate_store.get((int(0), int(0)))
     print(
@@ -1212,7 +1320,7 @@ elif final_result == RESULT_EVASIVE_CERTIFIED:
     )
 else:
     print(
-        "Certificate: not emitted for an inconclusive restricted search",
+        f"Certificate: not emitted for {final_result}",
         flush=True,
     )
 
@@ -1260,6 +1368,16 @@ print(
     flush=True,
 )
 print(
+    f"Configured limits: states={SEARCH_STATE_LIMIT:,}; "
+    f"seconds={SEARCH_TIME_LIMIT_SECONDS:g}",
+    flush=True,
+)
+print(
+    f"Resource limit reached: "
+    f"{search_stats.resource_limit_kind or 'none'}",
+    flush=True,
+)
+print(
     f"Protected candidates skipped by strict policy: "
     f"{search_stats.restricted_vertices_skipped:,}",
     flush=True,
@@ -1299,8 +1417,15 @@ print(
     f"cache_hits={search_stats.cache_hits}; "
     f"cache_evictions={search_stats.cache_evictions}; "
     f"state_engine={STATE_ENGINE}; "
+    f"elapsed_seconds={elapsed:.6f}; "
+    f"peak_rss_mib={peak_rss_mib:.3f}; "
+    f"recursive_calls={search_stats.recursive_calls}; "
     f"sage_state_materializations="
     f"{search_stats.sage_state_materializations}; "
+    f"search_state_limit={SEARCH_STATE_LIMIT}; "
+    f"search_time_limit_seconds={SEARCH_TIME_LIMIT_SECONDS:g}; "
+    f"resource_limit="
+    f"{search_stats.resource_limit_kind or 'none'}; "
     f"link_first_rejections={search_stats.link_first_rejections}; "
     f"protected_vertex_policy={PROTECTED_VERTEX_POLICY}; "
     f"restricted_vertices_skipped="

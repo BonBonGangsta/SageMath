@@ -32,6 +32,8 @@ run_case() {
     PROTECTED_VERTICES="${protected_vertices}" \
     PROTECTED_VERTEX_POLICY="${protected_policy}" \
     STATE_ENGINE=bitset \
+    SEARCH_STATE_LIMIT=0 \
+    SEARCH_TIME_LIMIT_SECONDS=0 \
     "${SAGE_BIN}" "${TEMP_V12_SCRIPT}" >"${log_file}" 2>&1
 
     if ! grep -Fq "FINAL_RESULT: ${expected_result};" "${log_file}"; then

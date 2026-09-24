@@ -75,6 +75,8 @@ docker compose run --rm \
   -e HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-300}" \
   -e WITNESS_CACHE_MAX_FAILURES="${WITNESS_CACHE_MAX_FAILURES:-500000}" \
   -e STATE_ENGINE="${STATE_ENGINE:-bitset}" \
+  -e SEARCH_STATE_LIMIT="${SEARCH_STATE_LIMIT:-0}" \
+  -e SEARCH_TIME_LIMIT_SECONDS="${SEARCH_TIME_LIMIT_SECONDS:-0}" \
   -e PROTECTED_VERTICES="${PROTECTED_VERTICES:-}" \
   -e PROTECTED_VERTEX_POLICY="${PROTECTED_VERTEX_POLICY:-prefer}" \
   -e PROTECTIVE_FACETS="${PROTECTIVE_FACETS}" \
@@ -86,8 +88,10 @@ docker compose run --rm \
     unset SAGE_ROOT
     tmp_file=\$(mktemp /tmp/sage-script-XXXXXX.sage)
     cp '${RELATIVE_SCRIPT_PATH}' \"\$tmp_file\"
+    cp scripts/simplicial_bitset.py /tmp/simplicial_bitset.py
     sage \"\$tmp_file\"
     rm -f \"\$tmp_file\"
+    rm -f /tmp/simplicial_bitset.py
   " > "${LOG_FILE}" 2>&1 || RUN_EXIT=$?
 
 

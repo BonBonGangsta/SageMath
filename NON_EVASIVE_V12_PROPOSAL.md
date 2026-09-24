@@ -219,6 +219,40 @@ Stage 4B validation performed:
 - Added the engine and materialization counters to heartbeat, certificate, and
   final-result metadata. The generic runner now forwards `STATE_ENGINE`.
 
+Stage 4C bounded-search and benchmark validation performed:
+
+- Added optional cache-miss state and cooperative wall-time limits. A stop at
+  either limit returns `INCONCLUSIVE_RESOURCE_LIMIT` and cannot fall through
+  to evasiveness classification or certificate emission.
+- Recorded configured limits, the stopping reason, elapsed time, and peak
+  resident memory in run output and heartbeat metadata.
+- Added a sequential comparison runner for the bitset and Sage-reference
+  engines. It applies the same input, seed, protection policy, and limits;
+  verifies any conclusive certificates; and writes a tab-separated summary.
+- Benchmark directories are timestamped and the runner refuses to overwrite
+  an existing directory, preserving prior experimental records.
+- Confirmed with regression tests that a one-state limit materializes exactly
+  one state, a near-zero time limit materializes none, neither emits a
+  certificate, invalid limits fail validation, and both engines participate
+  in the bounded benchmark path.
+- Corrected the generic runner to copy the v12 bitset companion module beside
+  its temporary Sage script.
+
+Recorded Stage 4C benchmark (`RANDOM_SEED=123456`, protected vertices
+`[1, 2, 3]`, 10,000-state limit, 60-second cooperative limit):
+
+| Engine | Result | States | Elapsed seconds | Peak RSS MiB | Certificate |
+| --- | --- | ---: | ---: | ---: | --- |
+| `bitset` | `NON_EVASIVE` | 84 | 0.122800 | 224.027 | verified |
+| `sage_reference` | `NON_EVASIVE` | 84 | 0.362682 | 207.648 | verified |
+
+On this small resolved workload, the bitset engine was about 3.0 times faster
+but reported about 16 MiB higher peak resident memory. This is one benchmark,
+not a general performance guarantee or a direct comparison with historical
+v11, because the reference engine deliberately replays each state from the
+root. The local artifacts are stored under
+`outputs/benchmarks/rudins_stage4c_fair_20260924T193515Z/`.
+
 ### Stage 5: Improve memoization and exploit symmetry
 
 Status: planned
@@ -326,3 +360,4 @@ correctness, certificates, and checkpointing.
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 3: made the certificate DAG the primary v12 proof output and removed expanded tree/CSV reconstruction. | No legacy CSV or expanded tree was produced; the sole proof artifact passed independent verification; all earlier suites passed. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 4A: added an isolated root-facet bitset representation and Sage-equivalence suite without changing the active search path. | Bitset state reconstruction, deletion, and link matched Sage for every distinct complex on at most four labeled vertices plus relabeled and non-pure cases. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 4B: integrated the bitset representation after cache lookup and retained a Sage replay engine for reference testing. | Both engines produced identical independently verified certificates for Rudin's ball and a recursive evasive fixture; every cache miss materialized exactly one Sage state. |
+| 2026-09-24 | `feature/nonevasive-v12` | Stage 4C: added sound state/time limits and a non-overwriting sequential engine benchmark runner. | State and time stops returned `INCONCLUSIVE_RESOURCE_LIMIT` without certificates; bounded bitset and Sage-reference smoke runs produced an auditable summary. |

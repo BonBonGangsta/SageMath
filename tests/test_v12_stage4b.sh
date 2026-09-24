@@ -34,6 +34,8 @@ run_case() {
     PROTECTED_VERTICES="${protected_vertices}" \
     PROTECTED_VERTEX_POLICY=prefer \
     STATE_ENGINE="${engine}" \
+    SEARCH_STATE_LIMIT=0 \
+    SEARCH_TIME_LIMIT_SECONDS=0 \
     "${SAGE_BIN}" "${SOLVER}" >"${log_file}" 2>&1 || {
         cat "${log_file}" >&2
         return 1
@@ -107,6 +109,8 @@ if FACETS_FILE="${PROJECT_DIR}/tests/data/simplex.txt" \
     RANDOM_SEED=123456 \
     CERTIFICATE_OUTPUT="${TEST_OUTPUT_DIR}/invalid.json" \
     STATE_ENGINE=invalid \
+    SEARCH_STATE_LIMIT=0 \
+    SEARCH_TIME_LIMIT_SECONDS=0 \
     "${SAGE_BIN}" "${SOLVER}" \
     >"${TEST_OUTPUT_DIR}/invalid_engine.log" 2>&1; then
     echo "FAIL: invalid state engine was accepted" >&2
