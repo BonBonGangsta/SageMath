@@ -105,3 +105,7 @@ docker compose run --rm --entrypoint /bin/bash sagemath-runner -c '
     outputs/rudins_ball_certificate.json
 '
 ```
+
+The JSON certificate DAG is v12's primary and sole proof artifact. V12 no
+longer expands that DAG into a console decision tree or repeatedly rewrites a
+legacy CSV tree. The preserved v1-v11 scripts may continue using `CSV_OUTPUT`.

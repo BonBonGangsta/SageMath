@@ -8,7 +8,7 @@ restricted search is reported as inconclusive rather than evasive.
 import random
 import time
 import resource
-import csv, ast, hashlib, json, os, subprocess
+import ast, hashlib, json, os, subprocess
 from datetime import datetime, timedelta, UTC
 from sage.all import GF, ZZ
 from sage.topology.simplicial_complex import SimplicialComplex
@@ -124,50 +124,10 @@ if unknown_vertices:
 
 print(f"Protected vertices: {sorted(PROTECTED_VERTICES)}", flush=True)
 print(f"Protected vertex policy: {PROTECTED_VERTEX_POLICY}", flush=True)
-# add csv capabilities
-CSV_OUTPUT = os.environ.get("CSV_OUTPUT", f"outputs/{seed}_{knot_name}.csv")
 CERTIFICATE_OUTPUT = os.environ.get(
     "CERTIFICATE_OUTPUT",
     f"outputs/{seed}_{knot_name}_certificate.json",
 )
-
-def export_proof_tree_to_csv(node, csv_path=CSV_OUTPUT):
-    rows = []
-
-    def walk(n, branch, depth):
-        if n is None:
-            return
-        rows.append({
-            "depth": depth,
-            "branch": branch,
-            "vertex": "" if n.vertex is None else n.vertex,
-            "context": " ".join(map(str, n.context)),
-        })
-        walk(n.link, "link", depth + 1)
-        walk(n.deletion, "deletion", depth + 1)
-
-    walk(node, "root", 0)
-    os.makedirs(os.path.dirname(csv_path), exist_ok = True)
-    with open(csv_path, "w", newline = "") as f:
-        writer = csv.DictWriter(f, fieldnames=["depth", "branch", "vertex", "context"])
-        writer.writeheader()
-        writer.writerows(rows)
-
-# === Tree node for proof tracking ===
-class ProofNode:
-    def __init__(self, vertex, context):
-        self.vertex = vertex
-        self.context = tuple(context)
-        self.link = None
-        self.deletion = None
-
-    def to_dict(self):
-        return {
-            "vertex": self.vertex,
-            "context": self.context,
-            "link": self.link.to_dict() if self.link else None,
-            "deletion": self.deletion.to_dict() if self.deletion else None
-        }
 
 # Heartbeat logger
 HEARTBEAT_MODE = os.environ.get("HEARTBEAT_MODE", "stdout").lower()
@@ -353,13 +313,6 @@ class WitnessCache:
                 search_stats.cache_evictions += 1
 
         self._update_stats()
-
-    def get_winning_vertex(self, state_key):
-        winning_vertex = self._successes.get(state_key, _CACHE_MISS)
-        if winning_vertex is _CACHE_MISS:
-            raise KeyError("No successful witness is cached for this state")
-        return winning_vertex
-
 
 class CertificateStore:
     """Retain proof records independently of cache eviction policy."""
@@ -964,53 +917,11 @@ def find_nonevasive_witness(
     certificate_store.store_failure(state_key, failed_children)
     return False
 
-def build_proof_tree(
-    K,
-    witness_cache,
-    vertex_bits,
-    state_key=(int(0), int(0)),
-    context=(),
-):
-    """Reconstruct a ProofNode tree without rerunning the witness search."""
-    winning_vertex = witness_cache.get_winning_vertex(state_key)
-
-    if winning_vertex is _NO_WINNING_VERTEX:
-        return ProofNode(None, context)
-
-    node = ProofNode(winning_vertex, context)
-    del_k = delete_vertex(K, winning_vertex)
-    lk = K.link([winning_vertex])
-    linked_mask, deleted_mask = state_key
-    vertex_bit = vertex_bits[winning_vertex]
-    # Preserve the existing proof-output convention: only the root receives
-    # the caller's ordering; recursive branch contexts start empty.
-    node.deletion = build_proof_tree(
-        del_k,
-        witness_cache,
-        vertex_bits,
-        state_key=(linked_mask, deleted_mask | vertex_bit),
-        context=(),
-    )
-    node.link = build_proof_tree(
-        lk,
-        witness_cache,
-        vertex_bits,
-        state_key=(linked_mask | vertex_bit, deleted_mask),
-        context=(),
-    )
-    return node
-
 def is_nonevasive(
     K,
-    ordering=None,
-    depth=0,
     strategy="random",
-    context_path=(),
-    mode=None,
     rng=None,
 ):
-    if ordering is None:
-        ordering = []
     search_stats.reset(len(K.vertices()), strategy)
     vertex_bits = build_vertex_bits(K)
     witness_cache = WitnessCache()
@@ -1021,7 +932,7 @@ def is_nonevasive(
         build_root_distances(K) if strategy == "outer_layer" else None
     )
 
-    if not find_nonevasive_witness(
+    verdict = find_nonevasive_witness(
         K,
         witness_cache,
         certificate_store,
@@ -1030,25 +941,9 @@ def is_nonevasive(
         rng=rng,
         root_distances=root_distances,
         state_key=root_state_key,
-    ):
-        search_stats.phase = "search_complete"
-        return [(None, None, certificate_store, vertex_bits)]
-
-    search_stats.phase = "proof_reconstruction"
-    log_heartbeat("running", force=True)
-    node = build_proof_tree(
-        K,
-        witness_cache,
-        vertex_bits,
-        state_key=root_state_key,
-        context=tuple(ordering),
     )
-    search_stats.phase = "proof_complete"
-    winning_vertex = witness_cache.get_winning_vertex(root_state_key)
-    path = ordering.copy()
-    if winning_vertex is not _NO_WINNING_VERTEX:
-        path.append(winning_vertex)
-    return [(path, node, certificate_store, vertex_bits)]
+    search_stats.phase = "search_complete"
+    return (verdict, certificate_store, vertex_bits)
 
 
 def serialize_certificate_state(state_key, record):
@@ -1201,55 +1096,45 @@ def write_certificate(document, path):
 start_time = time.time()
 print(f"Using Seed: {seed}", flush=True)
 rng = random.Random(seed)
-result_paths = is_nonevasive(K, strategy="random", rng=rng)
+search_succeeded, certificate_store, vertex_bits = is_nonevasive(
+    K, strategy="random", rng=rng
+)
 print("\n" + "="*50, flush=True)
-final_result = None
-if result_paths:
-    path, node, certificate_store, vertex_bits = result_paths[0]
-    if path is not None:
-        final_result = RESULT_NON_EVASIVE
+if search_succeeded:
+    final_result = RESULT_NON_EVASIVE
+    root_record = certificate_store.get((int(0), int(0)))
+    print(
+        "✅ The complex is non-evasive. Found a valid certificate DAG.",
+        flush=True,
+    )
+    if "terminal_reason" in root_record:
         print(
-            "✅ The complex is non-evasive. Found a valid decision-tree "
-            "witness.",
+            f"Root terminal reason: {root_record['terminal_reason']}",
             flush=True,
         )
-        print("Root decision vertex:", path, flush=True)
-        print("=== Deletion Decision Tree ===", flush=True)
-        def print_tree(node, prefix=""):
-            if node is None:
-                return
-            print(f"{prefix}Vertex {node.vertex} (Context: {node.context})", flush=True)
-            if node.link:
-                print(f"{prefix}  ↪ Link:", flush=True)
-                print_tree(node.link, prefix + "    ")
-                export_proof_tree_to_csv(node)
-            if node.deletion:
-                print(f"{prefix}  ↪ Deletion:", flush=True)
-                print_tree(node.deletion, prefix + "    ")
-                export_proof_tree_to_csv(node)
-        if result_paths and result_paths[0][1]:
-            print_tree(result_paths[0][1])
     else:
-        if (
-            PROTECTED_VERTEX_POLICY == "restrict"
-            and search_stats.restricted_vertices_skipped > 0
-        ):
-            final_result = RESULT_INCONCLUSIVE_RESTRICTED
-            print(
-                "⚠️ No witness was found under the strict protected-vertex "
-                "policy. Ordinary evasiveness was not proved.",
-                flush=True,
-            )
-        else:
-            final_result = RESULT_EVASIVE_CERTIFIED
-            print(
-                "❌ The unrestricted recursive search classified the "
-                "complex as evasive.",
-                flush=True,
-            )
-
-if final_result is None:
-    raise RuntimeError("The search returned an unrecognized result")
+        print(
+            f"Root decision vertex: {root_record['winning_vertex']}",
+            flush=True,
+        )
+else:
+    if (
+        PROTECTED_VERTEX_POLICY == "restrict"
+        and search_stats.restricted_vertices_skipped > 0
+    ):
+        final_result = RESULT_INCONCLUSIVE_RESTRICTED
+        print(
+            "⚠️ No witness was found under the strict protected-vertex "
+            "policy. Ordinary evasiveness was not proved.",
+            flush=True,
+        )
+    else:
+        final_result = RESULT_EVASIVE_CERTIFIED
+        print(
+            "❌ The unrestricted recursive search classified the "
+            "complex as evasive.",
+            flush=True,
+        )
 
 certificate_path = None
 if final_result == RESULT_NON_EVASIVE:
@@ -1260,6 +1145,10 @@ if final_result == RESULT_NON_EVASIVE:
         certificate_document, CERTIFICATE_OUTPUT
     )
     print(f"Certificate: {certificate_path}", flush=True)
+    print(
+        f"Certificate DAG states: {len(certificate_document['states']):,}",
+        flush=True,
+    )
 elif final_result == RESULT_EVASIVE_CERTIFIED:
     certificate_document = build_evasive_certificate(
         K, certificate_store, vertex_bits
@@ -1268,6 +1157,10 @@ elif final_result == RESULT_EVASIVE_CERTIFIED:
         certificate_document, CERTIFICATE_OUTPUT
     )
     print(f"Certificate: {certificate_path}", flush=True)
+    print(
+        f"Certificate DAG states: {len(certificate_document['states']):,}",
+        flush=True,
+    )
 else:
     print(
         "Certificate: not emitted for an inconclusive restricted search",

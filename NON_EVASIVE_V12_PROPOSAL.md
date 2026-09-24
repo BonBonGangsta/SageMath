@@ -151,7 +151,7 @@ Stage 2B validation performed:
 
 ### Stage 3: Repair and simplify proof output
 
-Status: planned
+Status: completed on 2026-09-24
 
 - Export the certificate once after the search finishes.
 - Remove repeated CSV rewrites from inside recursive tree printing.
@@ -160,10 +160,17 @@ Status: planned
 - Stop describing the root winning vertex as a complete "deletion path"; the
   mathematical witness is a branching decision tree or DAG.
 
-Validation gate:
+Validation performed:
 
-- Export time should be linear in the certificate DAG size.
-- Reloading the serialized certificate must preserve all child relationships.
+- Removed v12's expanded `ProofNode` reconstruction and recursive console-tree
+  printing. The cached search result now feeds the certificate DAG directly.
+- Removed v12's legacy CSV writer and all repeated recursive CSV rewrites.
+- The JSON certificate is written atomically exactly once for each conclusive
+  v12 run and reports its reachable DAG state count.
+- Confirmed that setting the historical `CSV_OUTPUT` variable does not create a
+  v12 CSV artifact, while the generic runner retains that variable for v1-v11.
+- Verified the resulting Rudin's-ball DAG with the independent verifier.
+- Reran the Stage 2A, Stage 2B, and Stage 1 suites successfully.
 
 ### Stage 4: Introduce a bitset search core
 
@@ -288,3 +295,4 @@ correctness, certificates, and checkpointing.
 | 2026-09-24 | `feature/nonevasive-v12` | Added the v12 baseline and Stage 1 result semantics, protected-vertex policies, input checks, fixtures, and tests. | Four focused Sage tests passed; Rudin's-ball smoke test returned `NON_EVASIVE`. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 2A: added positive certificate DAG export and an independent verifier. | Rudin's-ball certificate passed; a corrupted certificate was rejected; Stage 1 regression suite passed. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 2B: added complete recursive evasiveness certificates and negative verification. | A recursive acyclic evasive certificate passed; incomplete vertex coverage and other corruptions were rejected; earlier suites passed. |
+| 2026-09-24 | `feature/nonevasive-v12` | Stage 3: made the certificate DAG the primary v12 proof output and removed expanded tree/CSV reconstruction. | No legacy CSV or expanded tree was produced; the sole proof artifact passed independent verification; all earlier suites passed. |
