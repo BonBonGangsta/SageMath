@@ -174,8 +174,7 @@ Validation performed:
 
 ### Stage 4: Introduce a bitset search core
 
-Status: in progress; Stage 4A representation and equivalence tests completed
-on 2026-09-24
+Status: completed on 2026-09-24
 
 - Assign one bit to each root vertex.
 - Store facets as integer masks.
@@ -204,6 +203,21 @@ Stage 4A validation performed:
   relabeled, custom-order, redundant-facet, and non-pure examples.
 - Confirmed that empty-vertex states retain SageMath's empty-facet convention
   and that invalid, overlapping, unknown, and non-face masks are rejected.
+
+Stage 4B validation performed:
+
+- Made the verified root-facet bitset model the default v12 state engine.
+- Moved state reconstruction after cache lookup, so cache hits no longer build
+  unused child SageMath complexes.
+- Each cache miss now reconstructs facets directly from the linked/deleted
+  masks and materializes exactly one SageMath complex for classification.
+- Retained a `sage_reference` engine that independently replays SageMath links
+  and deletions from the root for equivalence testing.
+- The bitset and Sage-reference engines returned the same verdict and exact
+  certificate state DAG on Rudin's ball and the recursive acyclic evasive
+  fixture. All four certificates passed the independent verifier.
+- Added the engine and materialization counters to heartbeat, certificate, and
+  final-result metadata. The generic runner now forwards `STATE_ENGINE`.
 
 ### Stage 5: Improve memoization and exploit symmetry
 
@@ -311,3 +325,4 @@ correctness, certificates, and checkpointing.
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 2B: added complete recursive evasiveness certificates and negative verification. | A recursive acyclic evasive certificate passed; incomplete vertex coverage and other corruptions were rejected; earlier suites passed. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 3: made the certificate DAG the primary v12 proof output and removed expanded tree/CSV reconstruction. | No legacy CSV or expanded tree was produced; the sole proof artifact passed independent verification; all earlier suites passed. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 4A: added an isolated root-facet bitset representation and Sage-equivalence suite without changing the active search path. | Bitset state reconstruction, deletion, and link matched Sage for every distinct complex on at most four labeled vertices plus relabeled and non-pure cases. |
+| 2026-09-24 | `feature/nonevasive-v12` | Stage 4B: integrated the bitset representation after cache lookup and retained a Sage replay engine for reference testing. | Both engines produced identical independently verified certificates for Rudin's ball and a recursive evasive fixture; every cache miss materialized exactly one Sage state. |

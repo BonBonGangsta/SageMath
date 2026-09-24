@@ -20,6 +20,7 @@ CORRUPTED_VERTEX="${TEST_OUTPUT_DIR}/corrupted_vertex.json"
 CORRUPTED_BRANCH="${TEST_OUTPUT_DIR}/corrupted_branch.json"
 CORRUPTED_TERMINAL="${TEST_OUTPUT_DIR}/corrupted_terminal.json"
 cp "${PROJECT_DIR}/scripts/knot_nonevasive_v12.sage" "${SOLVER}"
+cp "${PROJECT_DIR}/scripts/simplicial_bitset.py" "${TEST_OUTPUT_DIR}/"
 cp "${PROJECT_DIR}/scripts/verify_nonevasive_certificate.sage" "${VERIFIER}"
 
 FACETS_FILE="${PROJECT_DIR}/knots/rudins_ball.txt" \
@@ -29,6 +30,7 @@ CSV_OUTPUT="${TEST_OUTPUT_DIR}/rudins_tree.csv" \
 CERTIFICATE_OUTPUT="${CERTIFICATE}" \
 PROTECTED_VERTICES='[1, 2, 3]' \
 PROTECTED_VERTEX_POLICY=prefer \
+STATE_ENGINE=bitset \
 "${SAGE_BIN}" "${SOLVER}" >"${TEST_OUTPUT_DIR}/solver.log" 2>&1 || {
     cat "${TEST_OUTPUT_DIR}/solver.log" >&2
     exit 1

@@ -8,12 +8,18 @@ restricted search is reported as inconclusive rather than evasive.
 import random
 import time
 import resource
-import ast, hashlib, json, os, subprocess
+import ast, hashlib, json, os, subprocess, sys
 from datetime import datetime, timedelta, UTC
 from sage.all import GF, ZZ
 from sage.topology.simplicial_complex import SimplicialComplex
 from pathlib import Path
 from collections import Counter, OrderedDict, deque
+
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+if str(SCRIPT_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIRECTORY))
+
+from simplicial_bitset import RootBitsetComplex
 
 # Seed
 seed_env = os.environ.get("RANDOM_SEED")
@@ -135,6 +141,10 @@ HEARTBEAT_INTERVAL_SECONDS = int(os.environ.get("HEARTBEAT_INTERVAL_SECONDS", "4
 WITNESS_CACHE_MAX_FAILURES = int(
     os.environ.get("WITNESS_CACHE_MAX_FAILURES", "500000")
 )
+STATE_ENGINE = os.environ.get("STATE_ENGINE", "bitset").strip().lower()
+VALID_STATE_ENGINES = frozenset({"bitset", "sage_reference"})
+if STATE_ENGINE not in VALID_STATE_ENGINES:
+    raise ValueError("STATE_ENGINE must be one of: bitset, sage_reference")
 
 
 def get_boolean_environment_setting(name, default):
@@ -247,6 +257,8 @@ class SearchStats:
         self.link_recursive_calls = 0
         self.deletion_recursive_calls = 0
         self.link_first_rejections = 0
+        self.sage_state_materializations = 0
+        self.bitset_state_reconstructions = 0
         self.homology_zz_calls = 0
         self.homology_gf2_calls = 0
         self.homology_zz_seconds = 0.0
@@ -453,6 +465,7 @@ def log_heartbeat(
         "timestamp": datetime.now(UTC).isoformat(),
         "container_id": knot_name,
         "strategy": search_stats.strategy,
+        "state_engine": STATE_ENGINE,
         "protected_vertex_policy": PROTECTED_VERTEX_POLICY,
         "protected_vertices": sorted(PROTECTED_VERTICES),
         "restricted_vertices_skipped": int(
@@ -493,6 +506,12 @@ def log_heartbeat(
         ),
         "link_first_rejections": int(
             search_stats.link_first_rejections
+        ),
+        "sage_state_materializations": int(
+            search_stats.sage_state_materializations
+        ),
+        "bitset_state_reconstructions": int(
+            search_stats.bitset_state_reconstructions
         ),
         "homology_policy": "adaptive_zz_gf2",
         "homology_start_depth": int(HOMOLOGY_START_DEPTH),
@@ -739,12 +758,33 @@ def homology_test_for_state(K, depth, is_link_state):
 
     return None
 
-def build_vertex_bits(K):
-    """Assign one Python-integer bit to every vertex of the fixed root."""
-    return {
-        vertex: int(1) << index
-        for index, vertex in enumerate(K.vertices())
-    }
+def materialize_search_state(root_K, root_bitset, state_key):
+    """Build one Sage state after a cache miss using the selected engine."""
+    linked_mask, deleted_mask = state_key
+
+    if STATE_ENGINE == "bitset":
+        facet_masks = root_bitset.state_facets(
+            linked_mask, deleted_mask
+        )
+        state = root_bitset.sage_complex(facet_masks)
+        search_stats.bitset_state_reconstructions += 1
+    else:
+        # This deliberately independent reference path replays Sage links and
+        # deletions from the root. It remains available for equivalence tests,
+        # not as the recommended engine for long searches.
+        root_bitset.state_facets(linked_mask, deleted_mask)
+        state = SimplicialComplex(root_K.facets())
+        for index, vertex in enumerate(root_bitset.vertex_order):
+            vertex_bit = int(1) << index
+            if linked_mask & vertex_bit:
+                state = state.link([vertex])
+        for index, vertex in enumerate(root_bitset.vertex_order):
+            vertex_bit = int(1) << index
+            if deleted_mask & vertex_bit and vertex in state.vertices():
+                state = delete_vertex(state, vertex)
+
+    search_stats.sage_state_materializations += 1
+    return state
 
 def classify_nonevasive_state(K, depth=0, is_link_state=False):
     """Return ``(verdict, reason)``; verdict is None when search is needed."""
@@ -790,7 +830,8 @@ def classify_nonevasive_state(K, depth=0, is_link_state=False):
     return (None, None)
 
 def find_nonevasive_witness(
-    K,
+    root_K,
+    root_bitset,
     witness_cache,
     certificate_store,
     vertex_bits,
@@ -824,6 +865,7 @@ def find_nonevasive_witness(
         return cached[0]
 
     search_stats.subcomplexes_examined += 1
+    K = materialize_search_state(root_K, root_bitset, state_key)
     terminal_result, terminal_reason = classify_nonevasive_state(
         K, depth=depth, is_link_state=is_link_state
     )
@@ -859,11 +901,11 @@ def find_nonevasive_witness(
 
         # Both children must be non-evasive. Test the normally much smaller
         # link first so a failed link avoids the expensive deletion subtree.
-        lk = K.link([v])
         link_state_key = (linked_mask | vertex_bit, deleted_mask)
         search_stats.link_recursive_calls += 1
         if not find_nonevasive_witness(
-            lk,
+            root_K,
+            root_bitset,
             witness_cache,
             certificate_store,
             vertex_bits,
@@ -880,11 +922,11 @@ def find_nonevasive_witness(
             )
             continue
 
-        del_k = delete_vertex(K, v)
         deletion_state_key = (linked_mask, deleted_mask | vertex_bit)
         search_stats.deletion_recursive_calls += 1
         if not find_nonevasive_witness(
-            del_k,
+            root_K,
+            root_bitset,
             witness_cache,
             certificate_store,
             vertex_bits,
@@ -923,7 +965,11 @@ def is_nonevasive(
     rng=None,
 ):
     search_stats.reset(len(K.vertices()), strategy)
-    vertex_bits = build_vertex_bits(K)
+    root_bitset = RootBitsetComplex(
+        canonical_facets(K),
+        vertex_order=[int(vertex) for vertex in K.vertices()],
+    )
+    vertex_bits = root_bitset.vertex_bits
     witness_cache = WitnessCache()
     certificate_store = CertificateStore()
     root_state_key = (int(0), int(0))
@@ -934,6 +980,7 @@ def is_nonevasive(
 
     verdict = find_nonevasive_witness(
         K,
+        root_bitset,
         witness_cache,
         certificate_store,
         vertex_bits,
@@ -1002,6 +1049,7 @@ def build_certificate_document(
             "knot_name": knot_name,
             "seed": int(seed),
             "strategy": search_stats.strategy,
+            "state_engine": STATE_ENGINE,
             "protected_vertices": sorted(PROTECTED_VERTICES),
             "protected_vertex_policy": PROTECTED_VERTEX_POLICY,
             "git_revision": current_git_revision(),
@@ -1095,6 +1143,7 @@ def write_certificate(document, path):
 # Run the test
 start_time = time.time()
 print(f"Using Seed: {seed}", flush=True)
+print(f"State engine: {STATE_ENGINE}", flush=True)
 rng = random.Random(seed)
 search_succeeded, certificate_store, vertex_bits = is_nonevasive(
     K, strategy="random", rng=rng
@@ -1201,6 +1250,16 @@ print(
     flush=True,
 )
 print(
+    f"Sage state materializations: "
+    f"{search_stats.sage_state_materializations:,}",
+    flush=True,
+)
+print(
+    f"Bitset state reconstructions: "
+    f"{search_stats.bitset_state_reconstructions:,}",
+    flush=True,
+)
+print(
     f"Protected candidates skipped by strict policy: "
     f"{search_stats.restricted_vertices_skipped:,}",
     flush=True,
@@ -1239,6 +1298,9 @@ print(
     f"subcomplexes_examined={search_stats.subcomplexes_examined}; "
     f"cache_hits={search_stats.cache_hits}; "
     f"cache_evictions={search_stats.cache_evictions}; "
+    f"state_engine={STATE_ENGINE}; "
+    f"sage_state_materializations="
+    f"{search_stats.sage_state_materializations}; "
     f"link_first_rejections={search_stats.link_first_rejections}; "
     f"protected_vertex_policy={PROTECTED_VERTEX_POLICY}; "
     f"restricted_vertices_skipped="

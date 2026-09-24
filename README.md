@@ -110,10 +110,24 @@ The JSON certificate DAG is v12's primary and sole proof artifact. V12 no
 longer expands that DAG into a console decision tree or repeatedly rewrites a
 legacy CSV tree. The preserved v1-v11 scripts may continue using `CSV_OUTPUT`.
 
-Stage 4A adds an independently tested bitset representation without changing
-the active v12 search engine yet. Run its Sage-equivalence suite with:
+Stage 4 uses an independently tested bitset representation as the default v12
+state engine. It performs cache lookup before reconstructing a state and only
+materializes a Sage complex for a cache miss. Run the low-level Sage-equivalence
+suite with:
 
 ```bash
 docker compose run --rm --entrypoint /bin/bash sagemath-runner \
   -c 'cd /workspace && bash tests/test_v12_stage4a.sh'
 ```
+
+Run the complete engine and certificate equivalence suite with:
+
+```bash
+docker compose run --rm --entrypoint /bin/bash sagemath-runner \
+  -c 'cd /workspace && bash tests/test_v12_stage4b.sh'
+```
+
+`STATE_ENGINE=bitset` is the default. `STATE_ENGINE=sage_reference` replays
+Sage links and deletions from the root and is retained for correctness testing,
+not for long searches. The chosen engine is recorded in heartbeats,
+certificates, and final statistics.

@@ -15,6 +15,7 @@ TEST_OUTPUT_DIR=$(mktemp -d /tmp/nonevasive-v12-tests-XXXXXX)
 trap 'rm -rf "${TEST_OUTPUT_DIR}"' EXIT
 TEMP_V12_SCRIPT="${TEST_OUTPUT_DIR}/knot_nonevasive_v12.sage"
 cp "${V12_SCRIPT}" "${TEMP_V12_SCRIPT}"
+cp "${PROJECT_DIR}/scripts/simplicial_bitset.py" "${TEST_OUTPUT_DIR}/"
 
 run_case() {
     local name=$1
@@ -30,6 +31,7 @@ run_case() {
     CSV_OUTPUT="${TEST_OUTPUT_DIR}/${name}.csv" \
     PROTECTED_VERTICES="${protected_vertices}" \
     PROTECTED_VERTEX_POLICY="${protected_policy}" \
+    STATE_ENGINE=bitset \
     "${SAGE_BIN}" "${TEMP_V12_SCRIPT}" >"${log_file}" 2>&1
 
     if ! grep -Fq "FINAL_RESULT: ${expected_result};" "${log_file}"; then

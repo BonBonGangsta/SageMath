@@ -18,6 +18,7 @@ FACETS="${PROJECT_DIR}/tests/data/acyclic_evasive.txt"
 CERTIFICATE="${TEST_OUTPUT_DIR}/evasive_certificate.json"
 CORRUPTED="${TEST_OUTPUT_DIR}/evasive_certificate_corrupted.json"
 cp "${PROJECT_DIR}/scripts/knot_nonevasive_v12.sage" "${SOLVER}"
+cp "${PROJECT_DIR}/scripts/simplicial_bitset.py" "${TEST_OUTPUT_DIR}/"
 cp "${PROJECT_DIR}/scripts/verify_nonevasive_certificate.sage" "${VERIFIER}"
 
 FACETS_FILE="${FACETS}" \
@@ -27,6 +28,7 @@ CSV_OUTPUT="${TEST_OUTPUT_DIR}/unused_tree.csv" \
 CERTIFICATE_OUTPUT="${CERTIFICATE}" \
 PROTECTED_VERTICES='' \
 PROTECTED_VERTEX_POLICY=prefer \
+STATE_ENGINE=bitset \
 "${SAGE_BIN}" "${SOLVER}" >"${TEST_OUTPUT_DIR}/solver.log" 2>&1 || {
     cat "${TEST_OUTPUT_DIR}/solver.log" >&2
     exit 1
