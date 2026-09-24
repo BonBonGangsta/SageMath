@@ -8,7 +8,7 @@ restricted search is reported as inconclusive rather than evasive.
 import random
 import time
 import resource
-import csv, ast, json, os
+import csv, ast, hashlib, json, os, subprocess
 from datetime import datetime, timedelta, UTC
 from sage.all import GF, ZZ
 from sage.topology.simplicial_complex import SimplicialComplex
@@ -47,6 +47,10 @@ def load_facets_from_file(path):
             raise ValueError(f"Facet {index} must be a list or tuple")
         if not facet:
             raise ValueError(f"Facet {index} cannot be empty")
+        if any(type(vertex) is not int for vertex in facet):
+            raise ValueError(
+                f"Facet {index} contains a non-integer vertex label"
+            )
         if len(set(facet)) != len(facet):
             raise ValueError(f"Facet {index} repeats a vertex")
         normalized_facets.append(list(facet))
@@ -122,6 +126,10 @@ print(f"Protected vertices: {sorted(PROTECTED_VERTICES)}", flush=True)
 print(f"Protected vertex policy: {PROTECTED_VERTEX_POLICY}", flush=True)
 # add csv capabilities
 CSV_OUTPUT = os.environ.get("CSV_OUTPUT", f"outputs/{seed}_{knot_name}.csv")
+CERTIFICATE_OUTPUT = os.environ.get(
+    "CERTIFICATE_OUTPUT",
+    f"outputs/{seed}_{knot_name}_certificate.json",
+)
 
 def export_proof_tree_to_csv(node, csv_path=CSV_OUTPUT):
     rows = []
@@ -351,6 +359,95 @@ class WitnessCache:
         if winning_vertex is _CACHE_MISS:
             raise KeyError("No successful witness is cached for this state")
         return winning_vertex
+
+
+class CertificateStore:
+    """Retain proof records independently of cache eviction policy."""
+
+    def __init__(self):
+        self._records = {}
+
+    def _store(self, state_key, record):
+        existing = self._records.get(state_key)
+        if existing is not None and existing != record:
+            raise RuntimeError(
+                f"Conflicting certificate records for state {state_key}"
+            )
+        self._records[state_key] = record
+
+    def store_terminal(self, state_key, verdict, reason):
+        self._store(
+            state_key,
+            {
+                "verdict": (
+                    RESULT_NON_EVASIVE if verdict
+                    else RESULT_EVASIVE_CERTIFIED
+                ),
+                "terminal_reason": reason,
+            },
+        )
+
+    def store_success(
+        self, state_key, winning_vertex, deletion_child, link_child
+    ):
+        self._store(
+            state_key,
+            {
+                "verdict": RESULT_NON_EVASIVE,
+                "winning_vertex": int(winning_vertex),
+                "deletion_child": deletion_child,
+                "link_child": link_child,
+            },
+        )
+
+    def get(self, state_key):
+        try:
+            return self._records[state_key]
+        except KeyError as exc:
+            raise KeyError(
+                f"Missing certificate record for state {state_key}"
+            ) from exc
+
+
+def certificate_state_id(state_key):
+    linked_mask, deleted_mask = state_key
+    return f"L{linked_mask:x}-D{deleted_mask:x}"
+
+
+def canonical_facets(K):
+    """Return stable integer facets for hashing and verification."""
+    return sorted(
+        (sorted(int(vertex) for vertex in facet) for facet in K.facets()),
+        key=lambda facet: (len(facet), facet),
+    )
+
+
+def canonical_complex_sha256(K):
+    encoded = json.dumps(
+        canonical_facets(K), separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def current_git_revision():
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path.cwd(),
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def current_sage_version():
+    try:
+        import sage.version
+        return str(sage.version.version)
+    except (AttributeError, ImportError):
+        return None
 
 
 def log_heartbeat(
@@ -677,30 +774,35 @@ def build_vertex_bits(K):
     }
 
 def classify_nonevasive_state(K, depth=0, is_link_state=False):
-    """Return True/False for a terminal state, or None if search is needed."""
+    """Return ``(verdict, reason)``; verdict is None when search is needed."""
     # Sage's empty complex has dimension -1 and one empty facet. It is not a
     # base case for non-evasiveness here, and several Sage predicates treat it
     # specially, so reject it explicitly.
     if not K.vertices():
-        return False
+        return (False, "empty_complex")
 
     # These theorem-based terminal cases certify ordinary non-evasiveness.
     # Protected vertices remain an ordering preference for states that require
     # search; terminal theorems are independent of the ordering policy.
-    if is_simplex(K) or K.cone_vertices():
-        return True
+    if is_simplex(K):
+        return (True, "simplex")
+
+    if K.cone_vertices():
+        return (True, "cone")
 
     # Non-evasiveness for a one-dimensional complex is exactly the tree test.
     if K.dimension() == 1:
-        return is_tree_complex(K)
+        if is_tree_complex(K):
+            return (True, "tree")
+        return (False, "one_dimensional_not_tree")
 
     # Non-evasive complexes are contractible. Apply increasingly expensive
     # necessary conditions before starting any recursive branching.
     if not K.is_connected():
-        return False
+        return (False, "disconnected")
 
     if K.euler_characteristic() != 1:
-        return False
+        return (False, "euler_characteristic_not_one")
 
     homology_test = homology_test_for_state(K, depth, is_link_state)
     if homology_test is None:
@@ -710,13 +812,14 @@ def classify_nonevasive_state(K, depth=0, is_link_state=False):
         if not has_trivial_reduced_homology(
             K, base_ring, ring_name, depth=depth
         ):
-            return False
+            return (False, f"nontrivial_homology_{ring_name}")
 
-    return None
+    return (None, None)
 
 def find_nonevasive_witness(
     K,
     witness_cache,
+    certificate_store,
     vertex_bits,
     strategy="random",
     rng=None,
@@ -748,7 +851,7 @@ def find_nonevasive_witness(
         return cached[0]
 
     search_stats.subcomplexes_examined += 1
-    terminal_result = classify_nonevasive_state(
+    terminal_result, terminal_reason = classify_nonevasive_state(
         K, depth=depth, is_link_state=is_link_state
     )
     if terminal_result is not None:
@@ -757,6 +860,9 @@ def find_nonevasive_witness(
         search_stats.terminal_states_classified += 1
         witness_cache.store(
             state_key, terminal_result, _NO_WINNING_VERTEX
+        )
+        certificate_store.store_terminal(
+            state_key, terminal_result, terminal_reason
         )
         return terminal_result
 
@@ -780,15 +886,17 @@ def find_nonevasive_witness(
         # Both children must be non-evasive. Test the normally much smaller
         # link first so a failed link avoids the expensive deletion subtree.
         lk = K.link([v])
+        link_state_key = (linked_mask | vertex_bit, deleted_mask)
         search_stats.link_recursive_calls += 1
         if not find_nonevasive_witness(
             lk,
             witness_cache,
+            certificate_store,
             vertex_bits,
             strategy=strategy,
             rng=rng,
             root_distances=root_distances,
-            state_key=(linked_mask | vertex_bit, deleted_mask),
+            state_key=link_state_key,
             depth=depth + 1,
             is_link_state=True,
         ):
@@ -796,21 +904,29 @@ def find_nonevasive_witness(
             continue
 
         del_k = delete_vertex(K, v)
+        deletion_state_key = (linked_mask, deleted_mask | vertex_bit)
         search_stats.deletion_recursive_calls += 1
         if not find_nonevasive_witness(
             del_k,
             witness_cache,
+            certificate_store,
             vertex_bits,
             strategy=strategy,
             rng=rng,
             root_distances=root_distances,
-            state_key=(linked_mask, deleted_mask | vertex_bit),
+            state_key=deletion_state_key,
             depth=depth + 1,
             is_link_state=False,
         ):
             continue
 
         witness_cache.store(state_key, True, v)
+        certificate_store.store_success(
+            state_key,
+            v,
+            deletion_state_key,
+            link_state_key,
+        )
         return True
 
     witness_cache.store(state_key, False, _NO_WINNING_VERTEX)
@@ -866,6 +982,7 @@ def is_nonevasive(
     search_stats.reset(len(K.vertices()), strategy)
     vertex_bits = build_vertex_bits(K)
     witness_cache = WitnessCache()
+    certificate_store = CertificateStore()
     root_state_key = (int(0), int(0))
     log_heartbeat("running", force=True)
     root_distances = (
@@ -875,6 +992,7 @@ def is_nonevasive(
     if not find_nonevasive_witness(
         K,
         witness_cache,
+        certificate_store,
         vertex_bits,
         strategy=strategy,
         rng=rng,
@@ -882,7 +1000,7 @@ def is_nonevasive(
         state_key=root_state_key,
     ):
         search_stats.phase = "search_complete"
-        return [(None, None)]
+        return [(None, None, certificate_store, vertex_bits)]
 
     search_stats.phase = "proof_reconstruction"
     log_heartbeat("running", force=True)
@@ -898,7 +1016,99 @@ def is_nonevasive(
     path = ordering.copy()
     if winning_vertex is not _NO_WINNING_VERTEX:
         path.append(winning_vertex)
-    return [(path, node)]
+    return [(path, node, certificate_store, vertex_bits)]
+
+
+def serialize_certificate_state(state_key, record):
+    linked_mask, deleted_mask = state_key
+    serialized = {
+        "id": certificate_state_id(state_key),
+        "linked_mask": hex(linked_mask),
+        "deleted_mask": hex(deleted_mask),
+        "verdict": record["verdict"],
+    }
+    if "terminal_reason" in record:
+        serialized["terminal_reason"] = record["terminal_reason"]
+    else:
+        serialized.update(
+            {
+                "winning_vertex": record["winning_vertex"],
+                "deletion_child": certificate_state_id(
+                    record["deletion_child"]
+                ),
+                "link_child": certificate_state_id(record["link_child"]),
+            }
+        )
+    return serialized
+
+
+def build_nonevasive_certificate(K, certificate_store, vertex_bits):
+    """Build the reachable positive proof DAG rooted at the initial state."""
+    root_state_key = (int(0), int(0))
+    pending = [root_state_key]
+    visited = set()
+    states = []
+
+    while pending:
+        state_key = pending.pop()
+        if state_key in visited:
+            continue
+        visited.add(state_key)
+        record = certificate_store.get(state_key)
+        if record["verdict"] != RESULT_NON_EVASIVE:
+            raise RuntimeError(
+                "A non-evasive certificate references an evasive state"
+            )
+        states.append(serialize_certificate_state(state_key, record))
+        if "terminal_reason" not in record:
+            pending.append(record["deletion_child"])
+            pending.append(record["link_child"])
+
+    states.sort(key=lambda state: state["id"])
+    vertex_order = [
+        int(vertex)
+        for vertex in sorted(vertex_bits, key=lambda item: vertex_bits[item])
+    ]
+    return {
+        "format": "simplicial_nonevasiveness_certificate",
+        "schema_version": int(1),
+        "certificate_kind": "non_evasive",
+        "result": RESULT_NON_EVASIVE,
+        "root_state": certificate_state_id(root_state_key),
+        "input": {
+            "canonical_facets_sha256": canonical_complex_sha256(K),
+            "facet_count": len(K.facets()),
+            "vertex_count": len(K.vertices()),
+            "vertex_order": vertex_order,
+            "source": str(facets_file),
+        },
+        "run": {
+            "knot_name": knot_name,
+            "seed": int(seed),
+            "strategy": search_stats.strategy,
+            "protected_vertices": sorted(PROTECTED_VERTICES),
+            "protected_vertex_policy": PROTECTED_VERTEX_POLICY,
+            "git_revision": current_git_revision(),
+            "sage_version": current_sage_version(),
+        },
+        "states": states,
+    }
+
+
+def write_certificate(document, path):
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = output_path.with_name(output_path.name + ".tmp")
+    try:
+        with temporary_path.open("w", encoding="utf-8") as output_file:
+            json.dump(document, output_file, indent=2, sort_keys=True)
+            output_file.write("\n")
+        os.replace(temporary_path, output_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+    return output_path
+
 
 # Run the test
 start_time = time.time()
@@ -908,7 +1118,7 @@ result_paths = is_nonevasive(K, strategy="random", rng=rng)
 print("\n" + "="*50, flush=True)
 final_result = None
 if result_paths:
-    path, node = result_paths[0]
+    path, node, certificate_store, vertex_bits = result_paths[0]
     if path is not None:
         final_result = RESULT_NON_EVASIVE
         print(
@@ -953,6 +1163,16 @@ if result_paths:
 
 if final_result is None:
     raise RuntimeError("The search returned an unrecognized result")
+
+certificate_path = None
+if final_result == RESULT_NON_EVASIVE:
+    certificate_document = build_nonevasive_certificate(
+        K, certificate_store, vertex_bits
+    )
+    certificate_path = write_certificate(
+        certificate_document, CERTIFICATE_OUTPUT
+    )
+    print(f"Certificate: {certificate_path}", flush=True)
 
 print("=== Search Statistics ===", flush=True)
 print(f"Vertex attempts: {search_stats.vertex_attempts:,}", flush=True)

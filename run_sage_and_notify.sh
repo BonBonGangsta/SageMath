@@ -59,6 +59,7 @@ LOG_DIR="${SCRIPT_DIR}/outputs"
 mkdir -p "${LOG_DIR}"
 LOG_FILE="${LOG_DIR}/${KNOT_NAME}.log"
 CSV_OUTPUT="outputs/${KNOT_NAME}_tree.csv"
+CERTIFICATE_OUTPUT="outputs/${KNOT_NAME}_certificate.json"
 
 CONTAINER_NAME="sagemath_${KNOT_NAME}"
 
@@ -68,6 +69,7 @@ docker compose run --rm \
   --entrypoint /bin/bash \
   -v "${LOG_DIR}:/outputs" \
   -e CSV_OUTPUT="${CSV_OUTPUT}" \
+  -e CERTIFICATE_OUTPUT="${CERTIFICATE_OUTPUT}" \
   -e KNOT_NAME="${KNOT_NAME}" \
   -e HEARTBEAT_MODE="${HEARTBEAT_MODE:-stdout}" \
   -e HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-300}" \

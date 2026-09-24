@@ -93,3 +93,15 @@ Run the focused Stage 1 regression suite inside the Sage container with:
 docker compose run --rm --entrypoint /bin/bash sagemath-runner \
   -c 'cd /workspace && tests/test_v12_stage1.sh'
 ```
+
+Successful v12 searches also write a versioned JSON proof certificate. Verify a
+certificate independently with:
+
+```bash
+docker compose run --rm --entrypoint /bin/bash sagemath-runner -c '
+  cd /workspace
+  sage scripts/verify_nonevasive_certificate.sage \
+    knots/rudins_ball.txt \
+    outputs/rudins_ball_certificate.json
+'
+```

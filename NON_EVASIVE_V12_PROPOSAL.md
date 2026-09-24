@@ -103,7 +103,7 @@ Validation performed:
 
 ### Stage 2: Define a certificate format and add an independent verifier
 
-Status: planned
+Status: Stage 2A completed on 2026-09-24; Stage 2B in progress
 
 - Store certificates as state DAGs rather than expanded trees.
 - Give every state a stable identifier.
@@ -121,6 +121,17 @@ Validation gate:
 - Every emitted certificate must pass the independent verifier.
 - Deliberately corrupted vertices, branches, terminal reasons, and input hashes
   must cause verification to fail.
+
+Stage 2A validation performed:
+
+- Added a versioned JSON certificate containing an input-complex hash, vertex
+  bit order, reproducibility metadata, terminal reasons, and a reachable proof
+  DAG for `NON_EVASIVE` results.
+- Added an independent verifier that reconstructs deletion and link states from
+  the original facets and recomputes simplex, cone, and tree leaves.
+- Verified the Rudin's-ball certificate, including all internal transitions.
+- Confirmed that corrupting the input hash causes verification to fail.
+- Reran all Stage 1 result-semantics tests successfully.
 
 ### Stage 3: Repair and simplify proof output
 
@@ -259,3 +270,4 @@ correctness, certificates, and checkpointing.
 | --- | --- | --- | --- |
 | 2026-09-24 | `feature/nonevasive-v12` | Created the v12 proposal and preservation plan. No search implementation changed. | Repository history and prior scripts preserved. |
 | 2026-09-24 | `feature/nonevasive-v12` | Added the v12 baseline and Stage 1 result semantics, protected-vertex policies, input checks, fixtures, and tests. | Four focused Sage tests passed; Rudin's-ball smoke test returned `NON_EVASIVE`. |
+| 2026-09-24 | `feature/nonevasive-v12` | Stage 2A: added positive certificate DAG export and an independent verifier. | Rudin's-ball certificate passed; a corrupted certificate was rejected; Stage 1 regression suite passed. |
