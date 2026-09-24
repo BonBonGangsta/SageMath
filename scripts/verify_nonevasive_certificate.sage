@@ -161,7 +161,8 @@ def verify_certificate(facets_path, certificate_path):
 
     if document.get("format") != "simplicial_nonevasiveness_certificate":
         raise VerificationError("Unknown certificate format")
-    if document.get("schema_version") != 1:
+    schema_version = document.get("schema_version")
+    if schema_version not in {1, 2}:
         raise VerificationError("Unsupported certificate schema version")
     certificate_kind = document.get("certificate_kind")
     expected_results = {
@@ -234,8 +235,38 @@ def verify_certificate(facets_path, certificate_path):
             root, linked_mask, deleted_mask, vertex_order
         )
 
+        equivalent_state = record.get("equivalent_state")
         terminal_reason = record.get("terminal_reason")
-        if terminal_reason is not None:
+        if equivalent_state is not None:
+            if schema_version < 2:
+                raise VerificationError(
+                    "Equivalence records require certificate schema 2"
+                )
+            if not isinstance(equivalent_state, str):
+                raise VerificationError(
+                    "Equivalent state must be a state identifier"
+                )
+            conflicting_fields = {
+                "terminal_reason",
+                "winning_vertex",
+                "deletion_child",
+                "link_child",
+                "failed_children",
+            } & set(record)
+            if conflicting_fields:
+                raise VerificationError(
+                    "Equivalence record contains another proof form"
+                )
+            verify_state(equivalent_state, expected_verdict)
+            target_record = states[equivalent_state]
+            target_K = reconstruct_state(
+                root, *target_record["_state_key"], vertex_order
+            )
+            if canonical_facets(K) != canonical_facets(target_K):
+                raise VerificationError(
+                    "Equivalent states do not have identical facets"
+                )
+        elif terminal_reason is not None:
             if expected_verdict == "NON_EVASIVE":
                 verify_success_terminal(K, terminal_reason)
             else:

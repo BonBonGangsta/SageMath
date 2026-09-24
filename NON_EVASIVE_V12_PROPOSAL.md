@@ -255,7 +255,8 @@ root. The local artifacts are stored under
 
 ### Stage 5: Improve memoization and exploit symmetry
 
-Status: planned
+Status: in progress; Stage 5A normalized-complex memoization completed on
+2026-09-24. Stage 5B is planned.
 
 - Cache by normalized resulting complexes in addition to operation history.
 - Investigate canonical labeling of the vertex-facet incidence graph so that
@@ -268,6 +269,32 @@ Validation gate:
 
 - Turning symmetry reduction on or off must not change the mathematical result.
 - The verifier must confirm that orbit representatives cover every vertex.
+
+Stage 5A validation performed:
+
+- Added an optional, default-enabled cache keyed by the exact canonical tuple
+  of labeled maximal facet masks. No probabilistic hash is used, so cache-key
+  collisions cannot affect correctness.
+- Kept the linked/deleted operation-history cache as the first lookup. The
+  normalized key is computed only after that cache misses, and a normalized
+  hit avoids SageMath materialization and recursive recomputation.
+- Added a separately configurable bounded LRU for normalized failed states
+  (`NORMALIZED_CACHE_MAX_FAILURES`, default 100,000) and exposed cache sizes,
+  hits, evictions, key computations, and proof aliases in heartbeats and final
+  statistics.
+- Extended certificates to schema version 2 with explicit
+  `equivalent_state` proof edges. The independent verifier reconstructs both
+  states, checks identical labeled facets and verdicts, rejects cycles and
+  mixed proof forms, and still accepts alias-free schema-1 certificates.
+- Added the suspension over the seven-vertex acyclic evasive fixture. With
+  seed 45, cache-off search materialized 24 states while cache-on search
+  materialized 16; one normalized hit reused the full eight-state proof of the
+  shared suspension-vertex link. Both evasiveness certificates verified.
+- Verified positive equivalence handling with Rudin's ball and seed 13, whose
+  reachable non-evasive proof DAG contains a normalized equivalence edge.
+- Confirmed that missing, nonidentical, mixed-form, and schema-1 equivalence
+  aliases are rejected. Cache-on and cache-off runs retain the same
+  mathematical result.
 
 ### Stage 6: Improve branching and obstruction scheduling
 
@@ -361,3 +388,4 @@ correctness, certificates, and checkpointing.
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 4A: added an isolated root-facet bitset representation and Sage-equivalence suite without changing the active search path. | Bitset state reconstruction, deletion, and link matched Sage for every distinct complex on at most four labeled vertices plus relabeled and non-pure cases. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 4B: integrated the bitset representation after cache lookup and retained a Sage replay engine for reference testing. | Both engines produced identical independently verified certificates for Rudin's ball and a recursive evasive fixture; every cache miss materialized exactly one Sage state. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 4C: added sound state/time limits and a non-overwriting sequential engine benchmark runner. | State and time stops returned `INCONCLUSIVE_RESOURCE_LIMIT` without certificates; bounded bitset and Sage-reference smoke runs produced an auditable summary. |
+| 2026-09-24 | `feature/nonevasive-v12` | Stage 5A: cached exact labeled complexes across different link/deletion histories and added schema-2 equivalence proof edges. | Cache-on/off results verified; the suspension fixture fell from 24 to 16 materializations; positive and negative aliases verified; corrupt aliases were rejected. |

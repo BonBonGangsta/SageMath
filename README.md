@@ -172,3 +172,30 @@ Each benchmark creates a new timestamped directory under
 `outputs/benchmarks/`, refuses to overwrite an existing run, executes the two
 engines one at a time, and writes `summary.tsv`, logs, and any independently
 verified conclusive certificates.
+
+## Normalized-Complex Memoization
+
+Stage 5A enables a second cache by default. After an operation-history cache
+miss, v12 canonicalizes the resulting maximal facet masks and reuses a
+completed result when another linked/deleted history produced the exact same
+labeled complex:
+
+```bash
+NORMALIZED_COMPLEX_CACHE=true
+NORMALIZED_CACHE_MAX_FAILURES=100000
+```
+
+Set `NORMALIZED_COMPLEX_CACHE=false` for reference comparisons. The failure
+index uses a bounded LRU; successful entries remain available for positive
+proof construction. Proof records are retained separately for certificate
+construction, so checkpointing or disk-backed proof storage is still needed
+for searches whose negative certificates exceed memory.
+
+This stage does not identify complexes that are merely isomorphic under a
+vertex relabeling. Canonical isomorphism and automorphism-orbit reduction are
+reserved for Stage 5B.
+
+Certificates containing reused results use schema version 2 and record an
+`equivalent_state` edge. The independent verifier reconstructs both states and
+requires their labeled facets and verdicts to agree. Alias-free schema-1
+certificates remain supported.

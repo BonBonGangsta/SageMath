@@ -142,6 +142,9 @@ HEARTBEAT_INTERVAL_SECONDS = int(os.environ.get("HEARTBEAT_INTERVAL_SECONDS", "4
 WITNESS_CACHE_MAX_FAILURES = int(
     os.environ.get("WITNESS_CACHE_MAX_FAILURES", "500000")
 )
+NORMALIZED_CACHE_MAX_FAILURES = int(
+    os.environ.get("NORMALIZED_CACHE_MAX_FAILURES", "100000")
+)
 STATE_ENGINE = os.environ.get("STATE_ENGINE", "bitset").strip().lower()
 VALID_STATE_ENGINES = frozenset({"bitset", "sage_reference"})
 if STATE_ENGINE not in VALID_STATE_ENGINES:
@@ -176,6 +179,11 @@ def get_boolean_environment_setting(name, default):
     )
 
 
+NORMALIZED_COMPLEX_CACHE = get_boolean_environment_setting(
+    "NORMALIZED_COMPLEX_CACHE", True
+)
+
+
 # Adaptive homology policy. Integral homology is always used at the root
 # after the cheaper terminal tests. A descendant is considered small when it
 # meets either enabled ZZ threshold. Larger direct-link states and periodic
@@ -202,6 +210,9 @@ if HEARTBEAT_INTERVAL_SECONDS <= 0:
 
 if WITNESS_CACHE_MAX_FAILURES < 0:
     raise ValueError("WITNESS_CACHE_MAX_FAILURES cannot be negative")
+
+if NORMALIZED_CACHE_MAX_FAILURES < 0:
+    raise ValueError("NORMALIZED_CACHE_MAX_FAILURES cannot be negative")
 
 if HOMOLOGY_ZZ_MAX_VERTICES < 0:
     raise ValueError("HOMOLOGY_ZZ_MAX_VERTICES cannot be negative")
@@ -280,6 +291,14 @@ class SearchStats:
         self.cache_success_entries = 0
         self.cache_failure_entries = 0
         self.cache_evictions = 0
+        self.normalized_cache_hits = 0
+        self.normalized_cache_entries = 0
+        self.normalized_cache_peak_entries = 0
+        self.normalized_cache_success_entries = 0
+        self.normalized_cache_failure_entries = 0
+        self.normalized_cache_evictions = 0
+        self.normalized_key_computations = 0
+        self.certificate_equivalence_aliases = 0
         self.terminal_states_classified = 0
         self.deepest_path = 0
         self.link_recursive_calls = 0
@@ -305,6 +324,19 @@ class SearchStats:
         self.cache_entries = int(success_entries + failure_entries)
         self.cache_peak_entries = max(
             self.cache_peak_entries, self.cache_entries
+        )
+
+    def update_normalized_cache_sizes(
+        self, success_entries, failure_entries
+    ):
+        self.normalized_cache_success_entries = int(success_entries)
+        self.normalized_cache_failure_entries = int(failure_entries)
+        self.normalized_cache_entries = int(
+            success_entries + failure_entries
+        )
+        self.normalized_cache_peak_entries = max(
+            self.normalized_cache_peak_entries,
+            self.normalized_cache_entries,
         )
 
 search_stats = SearchStats()
@@ -357,6 +389,59 @@ class WitnessCache:
 
         self._update_stats()
 
+
+class NormalizedComplexCache:
+    """Share completed verdicts for identical labeled facet-mask tuples."""
+
+    def __init__(self, max_failures=NORMALIZED_CACHE_MAX_FAILURES):
+        self.max_failures = int(max_failures)
+        if self.max_failures < 0:
+            raise ValueError("max_failures cannot be negative")
+        self._successes = {}
+        self._failures = OrderedDict()
+        self._update_stats()
+
+    def _update_stats(self):
+        search_stats.update_normalized_cache_sizes(
+            len(self._successes), len(self._failures)
+        )
+
+    def lookup(self, normalized_facets):
+        success = self._successes.get(
+            normalized_facets, _CACHE_MISS
+        )
+        if success is not _CACHE_MISS:
+            representative_state, winning_vertex = success
+            return (True, winning_vertex, representative_state)
+
+        if normalized_facets in self._failures:
+            representative_state = self._failures[normalized_facets]
+            self._failures.move_to_end(normalized_facets)
+            return (False, _NO_WINNING_VERTEX, representative_state)
+
+        return _CACHE_MISS
+
+    def store(
+        self,
+        normalized_facets,
+        state_key,
+        verdict,
+        winning_vertex,
+    ):
+        if verdict:
+            self._failures.pop(normalized_facets, None)
+            self._successes[normalized_facets] = (
+                state_key,
+                winning_vertex,
+            )
+        elif self.max_failures:
+            self._failures[normalized_facets] = state_key
+            self._failures.move_to_end(normalized_facets)
+            if len(self._failures) > self.max_failures:
+                self._failures.popitem(last=False)
+                search_stats.normalized_cache_evictions += 1
+        self._update_stats()
+
 class CertificateStore:
     """Retain proof records independently of cache eviction policy."""
 
@@ -365,11 +450,34 @@ class CertificateStore:
 
     def _store(self, state_key, record):
         existing = self._records.get(state_key)
-        if existing is not None and existing != record:
+        if existing is not None:
+            if existing == record:
+                return
+            same_verdict = (
+                existing.get("verdict") == record.get("verdict")
+            )
+            replaces_or_retains_alias = (
+                "equivalent_state" in existing
+                or "equivalent_state" in record
+            )
+            if same_verdict and replaces_or_retains_alias:
+                return
             raise RuntimeError(
                 f"Conflicting certificate records for state {state_key}"
             )
         self._records[state_key] = record
+
+    def store_equivalence(self, state_key, verdict, equivalent_state):
+        self._store(
+            state_key,
+            {
+                "verdict": (
+                    RESULT_NON_EVASIVE if verdict
+                    else RESULT_EVASIVE_CERTIFIED
+                ),
+                "equivalent_state": equivalent_state,
+            },
+        )
 
     def store_terminal(self, state_key, verdict, reason):
         self._store(
@@ -497,6 +605,10 @@ def log_heartbeat(
         "container_id": knot_name,
         "strategy": search_stats.strategy,
         "state_engine": STATE_ENGINE,
+        "normalized_complex_cache": bool(NORMALIZED_COMPLEX_CACHE),
+        "normalized_cache_max_failures": int(
+            NORMALIZED_CACHE_MAX_FAILURES
+        ),
         "search_state_limit": int(SEARCH_STATE_LIMIT),
         "search_time_limit_seconds": float(SEARCH_TIME_LIMIT_SECONDS),
         "resource_limit_kind": search_stats.resource_limit_kind,
@@ -527,6 +639,31 @@ def log_heartbeat(
         "cache_failure_limit": int(WITNESS_CACHE_MAX_FAILURES),
         "cache_evictions": int(search_stats.cache_evictions),
         "cache_key_format": "linked_deleted_bitmasks",
+        "normalized_cache_hits": int(
+            search_stats.normalized_cache_hits
+        ),
+        "normalized_cache_entries": int(
+            search_stats.normalized_cache_entries
+        ),
+        "normalized_cache_peak_entries": int(
+            search_stats.normalized_cache_peak_entries
+        ),
+        "normalized_cache_success_entries": int(
+            search_stats.normalized_cache_success_entries
+        ),
+        "normalized_cache_failure_entries": int(
+            search_stats.normalized_cache_failure_entries
+        ),
+        "normalized_cache_evictions": int(
+            search_stats.normalized_cache_evictions
+        ),
+        "normalized_key_computations": int(
+            search_stats.normalized_key_computations
+        ),
+        "certificate_equivalence_aliases": int(
+            search_stats.certificate_equivalence_aliases
+        ),
+        "normalized_cache_key_format": "labeled_maximal_facet_bitmasks",
         # "paths_completed" is retained as the user-facing short name. More
         # precisely, it counts terminal cache-miss classifications. A state
         # can be counted again if it was evicted and later revisited.
@@ -794,15 +931,18 @@ def homology_test_for_state(K, depth, is_link_state):
 
     return None
 
-def materialize_search_state(root_K, root_bitset, state_key):
+def materialize_search_state(
+    root_K, root_bitset, state_key, normalized_facets=None
+):
     """Build one Sage state after a cache miss using the selected engine."""
     linked_mask, deleted_mask = state_key
 
     if STATE_ENGINE == "bitset":
-        facet_masks = root_bitset.state_facets(
-            linked_mask, deleted_mask
-        )
-        state = root_bitset.sage_complex(facet_masks)
+        if normalized_facets is None:
+            normalized_facets = root_bitset.state_facets(
+                linked_mask, deleted_mask
+            )
+        state = root_bitset.sage_complex(normalized_facets)
         search_stats.bitset_state_reconstructions += 1
     else:
         # This deliberately independent reference path replays Sage links and
@@ -914,6 +1054,7 @@ def find_nonevasive_witness(
     root_K,
     root_bitset,
     witness_cache,
+    normalized_cache,
     certificate_store,
     vertex_bits,
     strategy="random",
@@ -933,9 +1074,9 @@ def find_nonevasive_witness(
 
     A state key is ``(linked_mask, deleted_mask)`` relative to this run's fixed
     root complex. Links and deletions at distinct vertices commute, so the two
-    sets determine the resulting state exactly. Different histories can
-    occasionally produce the same complex under different keys; that only
-    misses a cache-sharing opportunity and cannot produce a false cache hit.
+    sets determine the resulting state exactly. The optional normalized cache
+    additionally shares completed results when different state keys produce
+    the exact same labeled facet-mask tuple.
     """
     search_stats.recursive_calls += 1
     search_stats.deepest_path = max(search_stats.deepest_path, depth)
@@ -946,9 +1087,36 @@ def find_nonevasive_witness(
         search_stats.cache_hits += 1
         return cached[0]
 
+    normalized_facets = None
+    if NORMALIZED_COMPLEX_CACHE or STATE_ENGINE == "bitset":
+        normalized_facets = root_bitset.state_facets(*state_key)
+
+    if NORMALIZED_COMPLEX_CACHE:
+        search_stats.normalized_key_computations += 1
+        normalized_cached = normalized_cache.lookup(normalized_facets)
+        if normalized_cached is not _CACHE_MISS:
+            verdict, winning_vertex, representative_state = normalized_cached
+            if representative_state == state_key:
+                raise RuntimeError(
+                    "Normalized cache returned the current state as an alias"
+                )
+            search_stats.normalized_cache_hits += 1
+            search_stats.certificate_equivalence_aliases += 1
+            witness_cache.store(state_key, verdict, winning_vertex)
+            certificate_store.store_equivalence(
+                state_key, verdict, representative_state
+            )
+            enforce_search_time_limit()
+            return verdict
+
     enforce_search_state_limit_before_miss()
     search_stats.subcomplexes_examined += 1
-    K = materialize_search_state(root_K, root_bitset, state_key)
+    K = materialize_search_state(
+        root_K,
+        root_bitset,
+        state_key,
+        normalized_facets=normalized_facets,
+    )
     enforce_search_time_limit()
     terminal_result, terminal_reason = classify_nonevasive_state(
         K, depth=depth, is_link_state=is_link_state
@@ -963,6 +1131,13 @@ def find_nonevasive_witness(
         certificate_store.store_terminal(
             state_key, terminal_result, terminal_reason
         )
+        if NORMALIZED_COMPLEX_CACHE:
+            normalized_cache.store(
+                normalized_facets,
+                state_key,
+                terminal_result,
+                _NO_WINNING_VERTEX,
+            )
         return terminal_result
 
     enforce_search_time_limit()
@@ -994,6 +1169,7 @@ def find_nonevasive_witness(
             root_K,
             root_bitset,
             witness_cache,
+            normalized_cache,
             certificate_store,
             vertex_bits,
             strategy=strategy,
@@ -1015,6 +1191,7 @@ def find_nonevasive_witness(
             root_K,
             root_bitset,
             witness_cache,
+            normalized_cache,
             certificate_store,
             vertex_bits,
             strategy=strategy,
@@ -1033,17 +1210,28 @@ def find_nonevasive_witness(
             )
             continue
 
-        witness_cache.store(state_key, True, v)
         certificate_store.store_success(
             state_key,
             v,
             deletion_state_key,
             link_state_key,
         )
+        witness_cache.store(state_key, True, v)
+        if NORMALIZED_COMPLEX_CACHE:
+            normalized_cache.store(
+                normalized_facets, state_key, True, v
+            )
         return True
 
-    witness_cache.store(state_key, False, _NO_WINNING_VERTEX)
     certificate_store.store_failure(state_key, failed_children)
+    witness_cache.store(state_key, False, _NO_WINNING_VERTEX)
+    if NORMALIZED_COMPLEX_CACHE:
+        normalized_cache.store(
+            normalized_facets,
+            state_key,
+            False,
+            _NO_WINNING_VERTEX,
+        )
     return False
 
 def is_nonevasive(
@@ -1058,6 +1246,7 @@ def is_nonevasive(
     )
     vertex_bits = root_bitset.vertex_bits
     witness_cache = WitnessCache()
+    normalized_cache = NormalizedComplexCache()
     certificate_store = CertificateStore()
     root_state_key = (int(0), int(0))
     log_heartbeat("running", force=True)
@@ -1071,6 +1260,7 @@ def is_nonevasive(
             K,
             root_bitset,
             witness_cache,
+            normalized_cache,
             certificate_store,
             vertex_bits,
             strategy=strategy,
@@ -1094,7 +1284,11 @@ def serialize_certificate_state(state_key, record):
         "deleted_mask": hex(deleted_mask),
         "verdict": record["verdict"],
     }
-    if "terminal_reason" in record:
+    if "equivalent_state" in record:
+        serialized["equivalent_state"] = certificate_state_id(
+            record["equivalent_state"]
+        )
+    elif "terminal_reason" in record:
         serialized["terminal_reason"] = record["terminal_reason"]
     elif record["verdict"] == RESULT_NON_EVASIVE:
         serialized.update(
@@ -1127,7 +1321,7 @@ def build_certificate_document(
     ]
     return {
         "format": "simplicial_nonevasiveness_certificate",
-        "schema_version": int(1),
+        "schema_version": int(2),
         "certificate_kind": certificate_kind,
         "result": result,
         "root_state": certificate_state_id((int(0), int(0))),
@@ -1143,6 +1337,10 @@ def build_certificate_document(
             "seed": int(seed),
             "strategy": search_stats.strategy,
             "state_engine": STATE_ENGINE,
+            "normalized_complex_cache": bool(NORMALIZED_COMPLEX_CACHE),
+            "normalized_cache_max_failures": int(
+                NORMALIZED_CACHE_MAX_FAILURES
+            ),
             "search_state_limit": int(SEARCH_STATE_LIMIT),
             "search_time_limit_seconds": float(
                 SEARCH_TIME_LIMIT_SECONDS
@@ -1174,7 +1372,9 @@ def build_nonevasive_certificate(K, certificate_store, vertex_bits):
                 "A non-evasive certificate references an evasive state"
             )
         states.append(serialize_certificate_state(state_key, record))
-        if "terminal_reason" not in record:
+        if "equivalent_state" in record:
+            pending.append(record["equivalent_state"])
+        elif "terminal_reason" not in record:
             pending.append(record["deletion_child"])
             pending.append(record["link_child"])
 
@@ -1206,7 +1406,9 @@ def build_evasive_certificate(K, certificate_store, vertex_bits):
                 "An evasiveness certificate references a non-evasive state"
             )
         states.append(serialize_certificate_state(state_key, record))
-        if "terminal_reason" not in record:
+        if "equivalent_state" in record:
+            pending.append(record["equivalent_state"])
+        elif "terminal_reason" not in record:
             pending.extend(
                 failure["child"]
                 for failure in record["failed_children"]
@@ -1338,6 +1540,25 @@ print(
 )
 print(f"Failure-cache evictions: {search_stats.cache_evictions:,}", flush=True)
 print(
+    f"Normalized-complex cache: "
+    f"{search_stats.normalized_cache_hits:,} hits; "
+    f"{search_stats.normalized_cache_entries:,} current / "
+    f"{search_stats.normalized_cache_peak_entries:,} peak "
+    f"({search_stats.normalized_cache_success_entries:,} successful, "
+    f"{search_stats.normalized_cache_failure_entries:,} failed)",
+    flush=True,
+)
+print(
+    f"Normalized-cache failure evictions: "
+    f"{search_stats.normalized_cache_evictions:,}",
+    flush=True,
+)
+print(
+    f"Certificate equivalence aliases: "
+    f"{search_stats.certificate_equivalence_aliases:,}",
+    flush=True,
+)
+print(
     f"Terminal states classified: "
     f"{search_stats.terminal_states_classified:,}",
     flush=True,
@@ -1416,6 +1637,12 @@ print(
     f"subcomplexes_examined={search_stats.subcomplexes_examined}; "
     f"cache_hits={search_stats.cache_hits}; "
     f"cache_evictions={search_stats.cache_evictions}; "
+    f"normalized_cache_enabled={NORMALIZED_COMPLEX_CACHE}; "
+    f"normalized_cache_hits={search_stats.normalized_cache_hits}; "
+    f"normalized_cache_evictions="
+    f"{search_stats.normalized_cache_evictions}; "
+    f"certificate_equivalence_aliases="
+    f"{search_stats.certificate_equivalence_aliases}; "
     f"state_engine={STATE_ENGINE}; "
     f"elapsed_seconds={elapsed:.6f}; "
     f"peak_rss_mib={peak_rss_mib:.3f}; "

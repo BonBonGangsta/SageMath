@@ -34,6 +34,8 @@ run_case() {
     PROTECTED_VERTICES="${protected_vertices}" \
     PROTECTED_VERTEX_POLICY=prefer \
     STATE_ENGINE="${engine}" \
+    NORMALIZED_COMPLEX_CACHE=true \
+    NORMALIZED_CACHE_MAX_FAILURES=100000 \
     SEARCH_STATE_LIMIT=0 \
     SEARCH_TIME_LIMIT_SECONDS=0 \
     "${SAGE_BIN}" "${SOLVER}" >"${log_file}" 2>&1 || {
@@ -109,6 +111,8 @@ if FACETS_FILE="${PROJECT_DIR}/tests/data/simplex.txt" \
     RANDOM_SEED=123456 \
     CERTIFICATE_OUTPUT="${TEST_OUTPUT_DIR}/invalid.json" \
     STATE_ENGINE=invalid \
+    NORMALIZED_COMPLEX_CACHE=true \
+    NORMALIZED_CACHE_MAX_FAILURES=100000 \
     SEARCH_STATE_LIMIT=0 \
     SEARCH_TIME_LIMIT_SECONDS=0 \
     "${SAGE_BIN}" "${SOLVER}" \

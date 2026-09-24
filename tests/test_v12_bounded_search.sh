@@ -29,6 +29,8 @@ run_limited_case() {
     RANDOM_SEED=123456 \
     CERTIFICATE_OUTPUT="${certificate}" \
     STATE_ENGINE=bitset \
+    NORMALIZED_COMPLEX_CACHE=true \
+    NORMALIZED_CACHE_MAX_FAILURES=100000 \
     SEARCH_STATE_LIMIT="${state_limit}" \
     SEARCH_TIME_LIMIT_SECONDS="${time_limit}" \
     "${SAGE_BIN}" "${SOLVER}" >"${log_file}" 2>&1
@@ -79,6 +81,8 @@ done
 BENCHMARK_OUTPUT_DIR="${TEST_OUTPUT_DIR}/benchmark" \
 BENCHMARK_STATE_LIMIT=1 \
 BENCHMARK_TIME_LIMIT_SECONDS=30 \
+NORMALIZED_COMPLEX_CACHE=true \
+NORMALIZED_CACHE_MAX_FAILURES=100000 \
 SAGE_BIN="${SAGE_BIN}" \
 bash "${PROJECT_DIR}/benchmarks/run_v12_engine_benchmark.sh" \
     "${FACETS}" bounded_smoke \
@@ -97,6 +101,8 @@ fi
 if BENCHMARK_OUTPUT_DIR="${TEST_OUTPUT_DIR}/benchmark" \
     BENCHMARK_STATE_LIMIT=1 \
     BENCHMARK_TIME_LIMIT_SECONDS=30 \
+    NORMALIZED_COMPLEX_CACHE=true \
+    NORMALIZED_CACHE_MAX_FAILURES=100000 \
     SAGE_BIN="${SAGE_BIN}" \
     bash "${PROJECT_DIR}/benchmarks/run_v12_engine_benchmark.sh" \
         "${FACETS}" bounded_smoke \
