@@ -1,9 +1,12 @@
 *.txt
+!tests/data/*.txt
 *.log
 *.csv
+*.sage.py
 *.ipynb_checkpoints
 *.nohup.out
-knots/
+knots/*
+!knots/rudins_ball.txt
 outputs/
 .env
 *.out

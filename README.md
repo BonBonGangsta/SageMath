@@ -62,3 +62,34 @@ Then run:
 
 ## Using NTFY
 NTFY is a simple HTTP-based pub-sub notification service. You can self host the application or use their REST API for free. Filling in the `NTFY_URL` and `NTFY_TOPIC` if you are self hosting. For more information, please visit: [https://ntfy.sh](https://ntfy.sh)
+
+## Non-Evasive Search v12
+
+Version 12 is developed separately from the preserved historical scripts. Its
+implementation plan and change record are in
+`NON_EVASIVE_V12_PROPOSAL.md`.
+
+Protected vertices are optional and use a soft ordering preference by default:
+
+```bash
+PROTECTED_VERTICES='[1,2,3]' \
+PROTECTED_VERTEX_POLICY=prefer \
+./run_sage_and_notify.sh \
+  rudins_ball \
+  scripts/knot_nonevasive_v12.sage \
+  knots/rudins_ball.txt
+```
+
+Supported policies are:
+
+- `prefer`: try protected vertices last, without excluding them;
+- `restrict`: reproduce the historical hard restriction and report an
+  inconclusive result if candidates were skipped;
+- `ignore`: use the selected vertex-ordering strategy without special handling.
+
+Run the focused Stage 1 regression suite inside the Sage container with:
+
+```bash
+docker compose run --rm --entrypoint /bin/bash sagemath-runner \
+  -c 'cd /workspace && tests/test_v12_stage1.sh'
+```

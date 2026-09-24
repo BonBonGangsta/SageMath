@@ -57,7 +57,7 @@ will return `INCONCLUSIVE_RESTRICTED`.
 
 ### Stage 0: Establish the v12 baseline
 
-Status: planned
+Status: completed on 2026-09-24
 
 - Copy v11 to a new `knot_nonevasive_v12.sage` file.
 - Leave v11 and all earlier versions unchanged.
@@ -65,14 +65,17 @@ Status: planned
   attempted and which conclusions it can safely support.
 - Record the initial input, configuration, seed, and code revision in outputs.
 
-Validation gate:
+Validation performed:
 
-- Confirm that the unchanged v11 behavior can be reproduced from the v12
-  baseline on small examples before changing search logic.
+- Created `scripts/knot_nonevasive_v12.sage` from v11 without modifying v11.
+- Preserved the v11 homology, caching, memory, and heartbeat instrumentation so
+  that later performance comparisons remain meaningful.
+- Added reusable small-complex fixtures and a standalone Rudin's-ball facets
+  file extracted from the historical embedded data.
 
 ### Stage 1: Correct result classification and protected-vertex handling
 
-Status: recommended first implementation
+Status: completed on 2026-09-24
 
 - Replace the single Boolean-style final result with the explicit result states
   defined above.
@@ -84,13 +87,19 @@ Status: recommended first implementation
 - Use the actual generated seed, rather than the possibly absent environment
   value, in output metadata and filenames.
 
-Validation gate:
+Validation performed:
 
-- A protected vertex must still appear among the candidates in ordinary mode.
-- Strict protected mode must return `INCONCLUSIVE_RESTRICTED` on failure.
-- A complex with nontrivial reduced homology may return
-  `EVASIVE_CERTIFIED` through that obstruction.
-- Known non-evasive examples must still return `NON_EVASIVE`.
+- Added a five-vertex regression complex for which soft preference finds a
+  witness while strict protection does not.
+- Verified that soft preference returns `NON_EVASIVE` and strict protection
+  returns `INCONCLUSIVE_RESTRICTED` for that example.
+- Verified that a simplex returns `NON_EVASIVE`.
+- Verified that a cycle returns `EVASIVE_CERTIFIED` through the exact
+  one-dimensional tree classification.
+- Ran Rudin's ball with protected vertices `[1, 2, 3]`, policy `prefer`, and
+  seed `123456`. It returned `NON_EVASIVE` after 54 vertex attempts and 84
+  examined subcomplexes, with zero protected candidates skipped.
+- Shell and Python syntax checks passed.
 
 ### Stage 2: Define a certificate format and add an independent verifier
 
@@ -249,3 +258,4 @@ correctness, certificates, and checkpointing.
 | Date | Branch | Change | Validation |
 | --- | --- | --- | --- |
 | 2026-09-24 | `feature/nonevasive-v12` | Created the v12 proposal and preservation plan. No search implementation changed. | Repository history and prior scripts preserved. |
+| 2026-09-24 | `feature/nonevasive-v12` | Added the v12 baseline and Stage 1 result semantics, protected-vertex policies, input checks, fixtures, and tests. | Four focused Sage tests passed; Rudin's-ball smoke test returned `NON_EVASIVE`. |
