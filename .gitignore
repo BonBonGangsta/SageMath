@@ -3,6 +3,8 @@
 *.log
 *.csv
 *.sage.py
+*.pyc
+__pycache__/
 *.ipynb_checkpoints
 *.nohup.out
 knots/*

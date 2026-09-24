@@ -174,7 +174,8 @@ Validation performed:
 
 ### Stage 4: Introduce a bitset search core
 
-Status: planned after correctness and verification
+Status: in progress; Stage 4A representation and equivalence tests completed
+on 2026-09-24
 
 - Assign one bit to each root vertex.
 - Store facets as integer masks.
@@ -190,6 +191,19 @@ Validation gate:
   must exactly match SageMath deletion and link.
 - The bitset and v12 reference searches must return the same verdicts and
   verifiable certificates.
+
+Stage 4A validation performed:
+
+- Added a standalone root-facet bitset model supporting canonical facet
+  normalization, vertex presence, deletion, link, and direct reconstruction
+  from disjoint linked/deleted masks.
+- Kept the active v12 recursion unchanged so representation correctness can be
+  reviewed independently of search-engine integration.
+- Exhaustively compared bitset operations with SageMath for every distinct
+  nonempty complex on at most four labeled vertices, with additional
+  relabeled, custom-order, redundant-facet, and non-pure examples.
+- Confirmed that empty-vertex states retain SageMath's empty-facet convention
+  and that invalid, overlapping, unknown, and non-face masks are rejected.
 
 ### Stage 5: Improve memoization and exploit symmetry
 
@@ -296,3 +310,4 @@ correctness, certificates, and checkpointing.
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 2A: added positive certificate DAG export and an independent verifier. | Rudin's-ball certificate passed; a corrupted certificate was rejected; Stage 1 regression suite passed. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 2B: added complete recursive evasiveness certificates and negative verification. | A recursive acyclic evasive certificate passed; incomplete vertex coverage and other corruptions were rejected; earlier suites passed. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 3: made the certificate DAG the primary v12 proof output and removed expanded tree/CSV reconstruction. | No legacy CSV or expanded tree was produced; the sole proof artifact passed independent verification; all earlier suites passed. |
+| 2026-09-24 | `feature/nonevasive-v12` | Stage 4A: added an isolated root-facet bitset representation and Sage-equivalence suite without changing the active search path. | Bitset state reconstruction, deletion, and link matched Sage for every distinct complex on at most four labeled vertices plus relabeled and non-pure cases. |
