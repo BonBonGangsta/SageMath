@@ -370,3 +370,59 @@ Run the Stage 6B regression suite with:
 docker compose run --rm --entrypoint /bin/bash sagemath-runner \
   -c 'cd /workspace && bash tests/test_v12_stage6b.sh'
 ```
+
+## Checkpoint and Resume
+
+Stage 7 can atomically preserve completed search states and resume them in a
+later process. Checkpointing is opt-in and does not remove the file after a
+completed run:
+
+```bash
+CHECKPOINT_PATH=outputs/my_complex_checkpoint.json \
+CHECKPOINT_INTERVAL_STATES=1000 \
+CHECKPOINT_INTERVAL_SECONDS=300 \
+SEARCH_STATE_LIMIT=50000 \
+./run_sage_and_notify.sh \
+  my_complex scripts/knot_nonevasive_v12.sage path/to/facets.txt
+```
+
+To continue, use the same input, seed, and search settings, set resume mode,
+and optionally raise or remove the resource limits:
+
+```bash
+CHECKPOINT_PATH=outputs/my_complex_checkpoint.json \
+CHECKPOINT_RESUME=true \
+SEARCH_STATE_LIMIT=0 \
+SEARCH_TIME_LIMIT_SECONDS=0 \
+./run_sage_and_notify.sh \
+  my_complex scripts/knot_nonevasive_v12.sage path/to/facets.txt
+```
+
+The state and time limits are deliberately excluded from the compatibility
+fingerprint so each resumed session can receive a new budget. The following
+must still match:
+
+- the canonical input complex and vertex order;
+- solver, bitset, and isomorphism source hashes and the Sage version;
+- seed, strategy, engine, protected-vertex policy, caches, symmetry options,
+  branch ordering, obstruction settings, and homology policy.
+
+Each checkpoint includes a SHA-256 payload checksum, completed certificate
+fragments, the exact failure-cache LRU, RNG state, adaptive profiles, and
+cumulative cache-miss counters. Writes use a temporary file followed by an
+atomic replacement. Derived normalized and isomorphism caches are rebuilt as
+needed after resume; exact completed-state results are restored immediately.
+
+An existing checkpoint is never overwritten by a fresh run unless
+`CHECKPOINT_OVERWRITE=true` is explicit. Use `CHECKPOINT_RESUME=true` for the
+normal continuation path. `SIGINT` and `SIGTERM` are cooperative: the solver
+finishes the current Sage operation, writes an `interrupted` checkpoint, and
+reports `INCONCLUSIVE_INTERRUPTED`. A forced `SIGKILL` can only recover the
+most recent periodic checkpoint.
+
+Run the Stage 7 regression suite with:
+
+```bash
+docker compose run --rm --entrypoint /bin/bash sagemath-runner \
+  -c 'cd /workspace && bash tests/test_v12_stage7.sh'
+```

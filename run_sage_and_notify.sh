@@ -98,6 +98,11 @@ docker compose run --rm \
   -e STATE_ENGINE="${STATE_ENGINE:-bitset}" \
   -e SEARCH_STATE_LIMIT="${SEARCH_STATE_LIMIT:-0}" \
   -e SEARCH_TIME_LIMIT_SECONDS="${SEARCH_TIME_LIMIT_SECONDS:-0}" \
+  -e CHECKPOINT_PATH="${CHECKPOINT_PATH:-}" \
+  -e CHECKPOINT_RESUME="${CHECKPOINT_RESUME:-false}" \
+  -e CHECKPOINT_OVERWRITE="${CHECKPOINT_OVERWRITE:-false}" \
+  -e CHECKPOINT_INTERVAL_STATES="${CHECKPOINT_INTERVAL_STATES:-1000}" \
+  -e CHECKPOINT_INTERVAL_SECONDS="${CHECKPOINT_INTERVAL_SECONDS:-300}" \
   -e PROTECTED_VERTICES="${PROTECTED_VERTICES:-}" \
   -e PROTECTED_VERTEX_POLICY="${PROTECTED_VERTEX_POLICY:-prefer}" \
   -e PROTECTIVE_FACETS="${PROTECTIVE_FACETS}" \
@@ -122,7 +127,15 @@ SUMMARY_LINE=$(tail -n 2 "${LOG_FILE}")
 
 case "${RUN_EXIT}" in
   0)
-    NOTIFICATION="✅ SageMath job complete for ${KNOT_NAME}. ${SUMMARY_LINE}"
+    if grep -Fq 'FINAL_RESULT: INCONCLUSIVE_INTERRUPTED;' "${LOG_FILE}"; then
+      NOTIFICATION="⏸️ SageMath job checkpointed after interruption for ${KNOT_NAME}. ${SUMMARY_LINE}"
+    elif grep -Fq 'FINAL_RESULT: INCONCLUSIVE_RESOURCE_LIMIT;' "${LOG_FILE}"; then
+      NOTIFICATION="⏸️ SageMath job reached a configured limit for ${KNOT_NAME}. ${SUMMARY_LINE}"
+    elif grep -Fq 'FINAL_RESULT: INCONCLUSIVE_RESTRICTED;' "${LOG_FILE}"; then
+      NOTIFICATION="⚠️ SageMath job completed only under a restricted policy for ${KNOT_NAME}. ${SUMMARY_LINE}"
+    else
+      NOTIFICATION="✅ SageMath job complete for ${KNOT_NAME}. ${SUMMARY_LINE}"
+    fi
     ;;
   137)
     NOTIFICATION="🚨 SageMath job ${KNOT_NAME} was killed (exit 137; likely out of memory or an external SIGKILL). ${SUMMARY_LINE}"

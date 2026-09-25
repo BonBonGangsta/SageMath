@@ -477,7 +477,7 @@ bounded A/B run establishes the best settings for the unresolved complexes.
 
 ### Stage 7: Add checkpoint and resume support
 
-Status: planned
+Status: completed on 2026-09-25.
 
 - Persist completed states, certificate fragments, and configuration metadata.
 - Refuse to resume if the input hash, code version, or correctness-affecting
@@ -489,6 +489,42 @@ Validation gate:
 
 - An interrupted and resumed small search must produce a certificate equivalent
   to an uninterrupted run.
+
+Validation performed:
+
+- Added opt-in, atomic JSON checkpoints containing completed proof records,
+  the exact failed-state LRU, RNG state, adaptive obstruction profiles,
+  cumulative cache-miss counts, resource-limit metadata, and explicit
+  `running`, `resource_limit`, `interrupted`, `completed`, or `error` status.
+- Added a canonical input fingerprint, correctness/search configuration
+  record, Sage version, and SHA-256 hashes of the solver, bitset engine, and
+  isomorphism implementation. Resume refuses mismatched input, configuration,
+  implementation, schema, structure, or payload checksum.
+- Kept state and time limits outside the compatibility fingerprint so a new
+  session can safely receive a larger budget without changing the underlying
+  search semantics.
+- Added explicit overwrite protection. A fresh run refuses an existing path
+  unless `CHECKPOINT_OVERWRITE=true`; ordinary continuation requires
+  `CHECKPOINT_RESUME=true`. Completed checkpoints are retained rather than
+  silently deleted.
+- Added cooperative `SIGINT` and `SIGTERM` handling. An interruption is
+  reported separately as `INCONCLUSIVE_INTERRUPTED`, writes an `interrupted`
+  checkpoint after the current Sage operation, and never emits a mathematical
+  certificate.
+- A ten-state bounded lexical search of Rudin's ball resumed to
+  `NON_EVASIVE`; its independently verified 47-state certificate records were
+  exactly equal to those from an uninterrupted lexical run. The resumed
+  session examined fewer new states.
+- A real SIGTERM during root homology produced a checksummed `interrupted`
+  checkpoint. Resuming it produced the same verified certificate records as
+  the uninterrupted run.
+- Confirmed that resuming an already completed checkpoint performs zero new
+  cache-miss materializations, and that strict protected-vertex checkpoints
+  remain `INCONCLUSIVE_RESTRICTED` after resume.
+- Did not add a live disk lookup on every failed-cache access. The in-memory
+  bounded LRU is restored between sessions; a disk-backed online cache remains
+  unnecessary until representative long-run measurements justify its I/O and
+  consistency cost.
 
 ### Stage 8: Add a regression and reference test suite
 
@@ -528,13 +564,14 @@ useful later, an optional `MAX_PARALLEL` setting can be added without removing
 the existing ability to submit several jobs. This is lower priority than search
 correctness, certificates, and checkpointing.
 
-## Recommended immediate sequence
+## Recommended next sequence
 
-1. Commit this proposal and preservation record.
-2. Create the untouched v12 baseline from v11.
-3. Implement Stage 1 only.
-4. Review and test Stage 1 before beginning certificate work.
-5. Implement each subsequent stage in a separate, reviewable commit.
+1. Run a bounded unresolved-complex experiment with the Stage 6 features and
+   Stage 7 checkpointing enabled.
+2. Complete Stage 8 by consolidating the accumulated fixtures into an
+   exhaustive independent reference suite.
+3. Review the full v12 branch and its preserved stage-by-stage history before
+   merging or deploying it as the primary long-search implementation.
 
 ## Change log
 
@@ -553,3 +590,4 @@ correctness, certificates, and checkpointing.
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 5C: added opt-in automorphism-orbit pruning and schema-4 orbit justifications. | Exhaustive orbits and 641 maps matched brute force; the suspension fixture fell from 24 to 16 materializations; corrupt orbit evidence was rejected. |
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 6A: added exact child preclassification, size-gated child-aware ordering, and a sequential branching benchmark. | Cheap classifications matched Sage on 189 complexes; Rudin's ball fell from 57 to 37 materializations; both engines and certificates matched; protected and fallback semantics passed. |
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 6B: added profiled adaptive obstruction scheduling, configurable small-prime homology, and a certified no-free-face obstruction. | Free-face detection matched Sage on 189 complexes; the Dunce Hat certificate fell from nine states to one; GF(3) detected Moore-space torsion missed by GF(2); certificates and the A/B runner verified. |
+| 2026-09-25 | `feature/nonevasive-v12` | Stage 7: added atomic, checksummed checkpoint/resume with compatibility fingerprints, overwrite protection, and cooperative signal handling. | A bounded Rudin run resumed to the exact uninterrupted 47-state certificate; SIGTERM resumed equivalently; completed and strict-policy resumes passed; stale and corrupted checkpoints were rejected. |

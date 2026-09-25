@@ -101,6 +101,8 @@ for scheduler in fixed adaptive; do
     HOMOLOGY_FIELDS_AT_ROOT="${HOMOLOGY_FIELDS_AT_ROOT}" \
     SEARCH_STATE_LIMIT="${BENCHMARK_STATE_LIMIT}" \
     SEARCH_TIME_LIMIT_SECONDS="${BENCHMARK_TIME_LIMIT_SECONDS}" \
+    CHECKPOINT_PATH='' \
+    CHECKPOINT_RESUME=false \
     HEARTBEAT_INTERVAL_SECONDS=86400 \
     "${SAGE_BIN}" "${SOLVER}" >"${log_file}" 2>&1 || {
         cat "${log_file}" >&2

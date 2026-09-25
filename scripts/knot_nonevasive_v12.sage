@@ -8,9 +8,9 @@ restricted search is reported as inconclusive rather than evasive.
 import random
 import time
 import resource
-import ast, hashlib, json, math, os, subprocess, sys
+import ast, hashlib, json, math, os, signal, subprocess, sys
 from datetime import datetime, timedelta, UTC
-from sage.all import GF, ZZ
+from sage.all import GF, RR, ZZ
 from sage.topology.simplicial_complex import SimplicialComplex
 from pathlib import Path
 from collections import Counter, OrderedDict, deque
@@ -91,6 +91,10 @@ RESULT_NON_EVASIVE = "NON_EVASIVE"
 RESULT_EVASIVE_CERTIFIED = "EVASIVE_CERTIFIED"
 RESULT_INCONCLUSIVE_RESTRICTED = "INCONCLUSIVE_RESTRICTED"
 RESULT_INCONCLUSIVE_RESOURCE_LIMIT = "INCONCLUSIVE_RESOURCE_LIMIT"
+RESULT_INCONCLUSIVE_INTERRUPTED = "INCONCLUSIVE_INTERRUPTED"
+
+CHECKPOINT_FORMAT = "simplicial_nonevasiveness_search_checkpoint"
+CHECKPOINT_SCHEMA_VERSION = int(1)
 
 
 def load_protected_vertices(raw_value):
@@ -326,6 +330,23 @@ HOMOLOGY_FIELD_RINGS = {
     prime: GF(prime) for prime in HOMOLOGY_FIELD_PRIMES
 }
 
+CHECKPOINT_PATH_TEXT = os.environ.get("CHECKPOINT_PATH", "").strip()
+CHECKPOINT_PATH = (
+    Path(CHECKPOINT_PATH_TEXT) if CHECKPOINT_PATH_TEXT else None
+)
+CHECKPOINT_RESUME = get_boolean_environment_setting(
+    "CHECKPOINT_RESUME", False
+)
+CHECKPOINT_OVERWRITE = get_boolean_environment_setting(
+    "CHECKPOINT_OVERWRITE", False
+)
+CHECKPOINT_INTERVAL_STATES = int(
+    os.environ.get("CHECKPOINT_INTERVAL_STATES", "1000")
+)
+CHECKPOINT_INTERVAL_SECONDS = float(
+    os.environ.get("CHECKPOINT_INTERVAL_SECONDS", "300")
+)
+
 if HEARTBEAT_INTERVAL_SECONDS <= 0:
     raise ValueError("HEARTBEAT_INTERVAL_SECONDS must be positive")
 
@@ -367,10 +388,30 @@ if HOMOLOGY_START_DEPTH < 0:
 if HOMOLOGY_GF2_DEPTH_INTERVAL < 0:
     raise ValueError("HOMOLOGY_GF2_DEPTH_INTERVAL cannot be negative")
 
+if CHECKPOINT_RESUME and CHECKPOINT_PATH is None:
+    raise ValueError("CHECKPOINT_RESUME requires CHECKPOINT_PATH")
+
+if CHECKPOINT_OVERWRITE and CHECKPOINT_RESUME:
+    raise ValueError(
+        "CHECKPOINT_OVERWRITE and CHECKPOINT_RESUME cannot both be true"
+    )
+
+if CHECKPOINT_INTERVAL_STATES < 0:
+    raise ValueError("CHECKPOINT_INTERVAL_STATES cannot be negative")
+
+if (
+    not math.isfinite(CHECKPOINT_INTERVAL_SECONDS)
+    or CHECKPOINT_INTERVAL_SECONDS < 0
+):
+    raise ValueError(
+        "CHECKPOINT_INTERVAL_SECONDS must be a finite nonnegative number"
+    )
+
 # Only used when HEARTBEAT_MODE=file
 HEARTBEAT_FILE = os.environ.get("HEARTBEAT_FILE", f"/outputs/heartbeat_{knot_name}.log")
 
 last_heartbeat = 0
+checkpoint_interruption_signal = None
 
 _CACHE_MISS = object()
 _NO_WINNING_VERTEX = object()
@@ -387,6 +428,17 @@ class SearchResourceLimitReached(RuntimeError):
             f"{kind} reached: configured={configured_limit}, "
             f"observed={observed_value}"
         )
+
+
+class SearchInterruptionRequested(RuntimeError):
+    """Internal control flow for a signal-triggered checkpoint stop."""
+
+    def __init__(self, signal_name):
+        self.signal_name = str(signal_name)
+        self.kind = "interruption_signal"
+        self.configured_limit = None
+        self.observed_value = self.signal_name
+        super().__init__(f"interruption requested by {self.signal_name}")
 
 
 def get_memory_usage_mib():
@@ -482,6 +534,10 @@ class SearchStats:
         self.obstruction_reorders = 0
         self.noncollapsibility_states_eligible = 0
         self.noncollapsibility_states_skipped = 0
+        self.checkpoint_writes = 0
+        self.checkpoint_loaded_states = 0
+        self.checkpoint_resume_count = 0
+        self.checkpoint_prior_subcomplexes = 0
         self.restricted_vertices_skipped = 0
 
     def record_obstruction(self, name, elapsed_seconds, rejected):
@@ -589,6 +645,10 @@ class WitnessCache:
                 search_stats.cache_evictions += 1
 
         self._update_stats()
+
+    def failure_state_keys(self):
+        """Return failed exact-cache keys from oldest to newest."""
+        return tuple(self._failures)
 
 
 class NormalizedComplexCache:
@@ -873,6 +933,12 @@ class CertificateStore:
                 f"Missing certificate record for state {state_key}"
             ) from exc
 
+    def items(self):
+        return tuple(self._records.items())
+
+    def __len__(self):
+        return len(self._records)
+
 
 def certificate_state_id(state_key):
     linked_mask, deleted_mask = state_key
@@ -952,6 +1018,22 @@ def log_heartbeat(
         ),
         "search_state_limit": int(SEARCH_STATE_LIMIT),
         "search_time_limit_seconds": float(SEARCH_TIME_LIMIT_SECONDS),
+        "checkpoint_enabled": bool(CHECKPOINT_PATH is not None),
+        "checkpoint_path": (
+            None if CHECKPOINT_PATH is None else str(CHECKPOINT_PATH)
+        ),
+        "checkpoint_resume_requested": bool(CHECKPOINT_RESUME),
+        "checkpoint_interval_states": int(CHECKPOINT_INTERVAL_STATES),
+        "checkpoint_interval_seconds": float(
+            CHECKPOINT_INTERVAL_SECONDS
+        ),
+        "checkpoint_writes": int(search_stats.checkpoint_writes),
+        "checkpoint_loaded_states": int(
+            search_stats.checkpoint_loaded_states
+        ),
+        "checkpoint_resume_count": int(
+            search_stats.checkpoint_resume_count
+        ),
         "resource_limit_kind": search_stats.resource_limit_kind,
         "resource_limit_configured": search_stats.resource_limit_configured,
         "resource_limit_observed": search_stats.resource_limit_observed,
@@ -971,6 +1053,10 @@ def log_heartbeat(
         # again. This is therefore an exact cache-miss count; it is also the
         # unique-state count whenever cache_evictions is zero.
         "subcomplexes_examined": int(search_stats.subcomplexes_examined),
+        "total_subcomplexes_examined": int(
+            search_stats.checkpoint_prior_subcomplexes
+            + search_stats.subcomplexes_examined
+        ),
         "cache_misses": int(search_stats.subcomplexes_examined),
         "cache_hits": int(search_stats.cache_hits),
         "cache_entries": int(search_stats.cache_entries),
@@ -1555,8 +1641,22 @@ def stop_for_resource_limit(kind, configured_limit, observed_value):
     )
 
 
+def request_checkpoint_interruption(signal_number, _frame):
+    global checkpoint_interruption_signal
+    try:
+        checkpoint_interruption_signal = signal.Signals(signal_number).name
+    except ValueError:
+        checkpoint_interruption_signal = str(signal_number)
+
+
 def enforce_search_time_limit():
     """Cooperatively stop between search operations when time is exhausted."""
+    if checkpoint_interruption_signal is not None:
+        search_stats.resource_limit_kind = "interruption_signal"
+        search_stats.resource_limit_configured = None
+        search_stats.resource_limit_observed = checkpoint_interruption_signal
+        search_stats.phase = "interrupted"
+        raise SearchInterruptionRequested(checkpoint_interruption_signal)
     if SEARCH_TIME_LIMIT_SECONDS <= 0:
         return
     elapsed = time.monotonic() - search_stats.started_monotonic
@@ -1762,6 +1862,7 @@ def find_nonevasive_witness(
     normalized_cache,
     isomorphism_cache,
     certificate_store,
+    checkpoint_manager,
     vertex_bits,
     strategy="random",
     rng=None,
@@ -1827,6 +1928,7 @@ def find_nonevasive_witness(
             certificate_store.store_equivalence(
                 state_key, verdict, representative_state
             )
+            checkpoint_manager.maybe_write()
             enforce_search_time_limit()
             return verdict
 
@@ -1866,6 +1968,7 @@ def find_nonevasive_witness(
                 representative_state,
                 vertex_mapping,
             )
+            checkpoint_manager.maybe_write()
             enforce_search_time_limit()
             return verdict
 
@@ -1909,6 +2012,7 @@ def find_nonevasive_witness(
                 terminal_result,
                 _NO_WINNING_VERTEX,
             )
+        checkpoint_manager.maybe_write()
         return terminal_result
 
     enforce_search_time_limit()
@@ -1978,6 +2082,7 @@ def find_nonevasive_witness(
             normalized_cache,
             isomorphism_cache,
             certificate_store,
+            checkpoint_manager,
             vertex_bits,
             strategy=strategy,
             rng=rng,
@@ -2013,6 +2118,7 @@ def find_nonevasive_witness(
             normalized_cache,
             isomorphism_cache,
             certificate_store,
+            checkpoint_manager,
             vertex_bits,
             strategy=strategy,
             rng=rng,
@@ -2057,6 +2163,7 @@ def find_nonevasive_witness(
                 True,
                 v,
             )
+        checkpoint_manager.maybe_write()
         return True
 
     certificate_store.store_failure(state_key, failed_children)
@@ -2076,6 +2183,7 @@ def find_nonevasive_witness(
             False,
             _NO_WINNING_VERTEX,
         )
+    checkpoint_manager.maybe_write()
     return False
 
 def is_nonevasive(
@@ -2083,6 +2191,8 @@ def is_nonevasive(
     strategy="random",
     rng=None,
 ):
+    global checkpoint_interruption_signal
+    checkpoint_interruption_signal = None
     search_stats.reset(len(K.vertices()), strategy)
     root_bitset = RootBitsetComplex(
         canonical_facets(K),
@@ -2093,13 +2203,29 @@ def is_nonevasive(
     normalized_cache = NormalizedComplexCache()
     isomorphism_cache = IsomorphismComplexCache()
     certificate_store = CertificateStore()
+    checkpoint_manager = CheckpointManager(
+        K,
+        vertex_bits,
+        witness_cache,
+        certificate_store,
+        rng,
+    )
+    checkpoint_manager.load()
     root_state_key = (int(0), int(0))
     log_heartbeat("running", force=True)
     root_distances = (
         build_root_distances(K) if strategy == "outer_layer" else None
     )
 
-    resource_limit = None
+    previous_signal_handlers = {}
+    if checkpoint_manager.enabled:
+        for signal_number in (signal.SIGINT, signal.SIGTERM):
+            previous_signal_handlers[signal_number] = signal.getsignal(
+                signal_number
+            )
+            signal.signal(signal_number, request_checkpoint_interruption)
+
+    stop_reason = None
     try:
         verdict = find_nonevasive_witness(
             K,
@@ -2108,6 +2234,7 @@ def is_nonevasive(
             normalized_cache,
             isomorphism_cache,
             certificate_store,
+            checkpoint_manager,
             vertex_bits,
             strategy=strategy,
             rng=rng,
@@ -2116,10 +2243,56 @@ def is_nonevasive(
         )
     except SearchResourceLimitReached as exc:
         verdict = None
-        resource_limit = exc
+        stop_reason = exc
+        checkpoint_manager.write(
+            "resource_limit",
+            stop={
+                "kind": exc.kind,
+                "configured": exc.configured_limit,
+                "observed": exc.observed_value,
+            },
+        )
+    except SearchInterruptionRequested as exc:
+        verdict = None
+        stop_reason = exc
+        checkpoint_manager.write(
+            "interrupted",
+            stop={"kind": exc.kind, "signal": exc.signal_name},
+        )
+    except BaseException as exc:
+        try:
+            checkpoint_manager.write(
+                "error",
+                stop={
+                    "kind": type(exc).__name__,
+                    "message": str(exc),
+                },
+            )
+        except Exception as checkpoint_exc:
+            print(
+                f"Checkpoint write after error also failed: {checkpoint_exc}",
+                flush=True,
+            )
+        raise
     else:
         search_stats.phase = "search_complete"
-    return (verdict, certificate_store, vertex_bits, resource_limit)
+        if verdict:
+            checkpoint_result = RESULT_NON_EVASIVE
+        elif (
+            PROTECTED_VERTEX_POLICY == "restrict"
+            and search_stats.restricted_vertices_skipped > 0
+        ):
+            checkpoint_result = RESULT_INCONCLUSIVE_RESTRICTED
+        else:
+            checkpoint_result = RESULT_EVASIVE_CERTIFIED
+        checkpoint_manager.write(
+            "completed",
+            stop={"result": checkpoint_result},
+        )
+    finally:
+        for signal_number, previous_handler in previous_signal_handlers.items():
+            signal.signal(signal_number, previous_handler)
+    return (verdict, certificate_store, vertex_bits, stop_reason)
 
 
 def serialize_certificate_state(state_key, record):
@@ -2187,6 +2360,574 @@ def serialize_certificate_state(state_key, record):
             serialized_failures.append(serialized_failure)
         serialized["failed_children"] = serialized_failures
     return serialized
+
+
+def checkpoint_hash_payload(payload):
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def checkpoint_json_safe(value):
+    """Recursively convert Sage scalar/container values to JSON types."""
+    if isinstance(value, dict):
+        return {
+            str(key): checkpoint_json_safe(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [checkpoint_json_safe(item) for item in value]
+    if value is None or type(value) in {bool, int, float, str}:
+        return value
+    if isinstance(value, type(ZZ(0))):
+        return int(value)
+    if isinstance(value, type(RR(0))):
+        return float(value)
+    raise TypeError(
+        f"Unsupported checkpoint JSON value: {type(value).__name__}"
+    )
+
+
+def checkpoint_implementation_record():
+    source_paths = {
+        "solver": Path(__file__).resolve(),
+        "simplicial_bitset": SCRIPT_DIRECTORY / "simplicial_bitset.py",
+        "simplicial_isomorphism": (
+            SCRIPT_DIRECTORY / "simplicial_isomorphism.py"
+        ),
+    }
+    source_hashes = {}
+    for name, path in source_paths.items():
+        try:
+            source_hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        except OSError as exc:
+            raise RuntimeError(
+                f"Cannot fingerprint checkpoint implementation file: {path}"
+            ) from exc
+    return {
+        "source_sha256": source_hashes,
+        "sage_version": current_sage_version(),
+    }
+
+
+def checkpoint_configuration_record():
+    """Return settings that must remain identical across resume."""
+    return {
+        "seed": int(seed),
+        "search_strategy": SEARCH_STRATEGY,
+        "state_engine": STATE_ENGINE,
+        "protected_vertices": sorted(PROTECTED_VERTICES),
+        "protected_vertex_policy": PROTECTED_VERTEX_POLICY,
+        "witness_cache_max_failures": int(WITNESS_CACHE_MAX_FAILURES),
+        "normalized_complex_cache": bool(NORMALIZED_COMPLEX_CACHE),
+        "normalized_cache_max_failures": int(
+            NORMALIZED_CACHE_MAX_FAILURES
+        ),
+        "isomorphism_complex_cache": bool(ISOMORPHISM_COMPLEX_CACHE),
+        "isomorphism_cache_max_failures": int(
+            ISOMORPHISM_CACHE_MAX_FAILURES
+        ),
+        "automorphism_orbit_pruning": bool(
+            AUTOMORPHISM_ORBIT_PRUNING
+        ),
+        "child_aware_ordering": bool(CHILD_AWARE_ORDERING),
+        "child_aware_max_vertices": int(CHILD_AWARE_MAX_VERTICES),
+        "child_aware_max_facets": int(CHILD_AWARE_MAX_FACETS),
+        "obstruction_scheduler": OBSTRUCTION_SCHEDULER,
+        "obstruction_adaptive_warmup_calls": int(
+            OBSTRUCTION_ADAPTIVE_WARMUP_CALLS
+        ),
+        "noncollapsibility_obstruction": bool(
+            NONCOLLAPSIBILITY_OBSTRUCTION
+        ),
+        "noncollapsibility_max_vertices": int(
+            NONCOLLAPSIBILITY_MAX_VERTICES
+        ),
+        "noncollapsibility_max_facets": int(
+            NONCOLLAPSIBILITY_MAX_FACETS
+        ),
+        "homology_zz_max_vertices": int(HOMOLOGY_ZZ_MAX_VERTICES),
+        "homology_zz_max_faces": int(HOMOLOGY_ZZ_MAX_FACES),
+        "homology_start_depth": int(HOMOLOGY_START_DEPTH),
+        "homology_field_depth_interval": int(
+            HOMOLOGY_GF2_DEPTH_INTERVAL
+        ),
+        "homology_fields_on_links": bool(HOMOLOGY_FIELDS_ON_LINKS),
+        "homology_field_primes": list(HOMOLOGY_FIELD_PRIMES),
+        "homology_fields_at_root": bool(HOMOLOGY_FIELDS_AT_ROOT),
+    }
+
+
+def checkpoint_input_record(K, vertex_bits):
+    vertex_order = [
+        int(vertex)
+        for vertex in sorted(vertex_bits, key=lambda item: vertex_bits[item])
+    ]
+    return {
+        "canonical_facets_sha256": canonical_complex_sha256(K),
+        "facet_count": len(K.facets()),
+        "vertex_count": len(K.vertices()),
+        "vertex_order": vertex_order,
+    }
+
+
+def checkpoint_random_state_to_json(value):
+    if isinstance(value, tuple):
+        return [checkpoint_random_state_to_json(item) for item in value]
+    return value
+
+
+def checkpoint_random_state_from_json(value):
+    if isinstance(value, list):
+        return tuple(checkpoint_random_state_from_json(item) for item in value)
+    return value
+
+
+def checkpoint_state_key(record, vertex_count):
+    try:
+        linked_mask = int(record["linked_mask"], 0)
+        deleted_mask = int(record["deleted_mask"], 0)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Checkpoint state masks must be hexadecimal strings") from exc
+    if linked_mask < 0 or deleted_mask < 0:
+        raise ValueError("Checkpoint state masks cannot be negative")
+    if linked_mask & deleted_mask:
+        raise ValueError("Checkpoint state masks overlap")
+    if (linked_mask | deleted_mask) >> vertex_count:
+        raise ValueError("Checkpoint state mask contains an unknown vertex")
+    state_key = (linked_mask, deleted_mask)
+    if record.get("id") != certificate_state_id(state_key):
+        raise ValueError("Checkpoint state ID does not match its masks")
+    return state_key
+
+
+def deserialize_checkpoint_records(serialized_states, vertex_bits):
+    if not isinstance(serialized_states, list):
+        raise ValueError("Checkpoint states must be a list")
+    id_to_key = {}
+    keyed_records = []
+    for serialized in serialized_states:
+        if not isinstance(serialized, dict):
+            raise ValueError("Malformed checkpoint state record")
+        state_key = checkpoint_state_key(serialized, len(vertex_bits))
+        identifier = serialized["id"]
+        if identifier in id_to_key:
+            raise ValueError(f"Duplicate checkpoint state: {identifier}")
+        verdict = serialized.get("verdict")
+        if verdict not in {RESULT_NON_EVASIVE, RESULT_EVASIVE_CERTIFIED}:
+            raise ValueError("Checkpoint state has an invalid verdict")
+        id_to_key[identifier] = state_key
+        keyed_records.append((state_key, serialized))
+
+    def referenced_state(identifier):
+        if not isinstance(identifier, str) or identifier not in id_to_key:
+            raise ValueError(
+                f"Checkpoint references a missing state: {identifier}"
+            )
+        return id_to_key[identifier]
+
+    records = []
+    for state_key, serialized in keyed_records:
+        verdict = serialized["verdict"]
+        if "equivalent_state" in serialized:
+            record = {
+                "verdict": verdict,
+                "equivalent_state": referenced_state(
+                    serialized["equivalent_state"]
+                ),
+            }
+        elif "isomorphic_state" in serialized:
+            mapping = serialized.get("vertex_isomorphism")
+            if not isinstance(mapping, list):
+                raise ValueError(
+                    "Checkpoint isomorphism requires a vertex mapping"
+                )
+            parsed_mapping = []
+            for item in mapping:
+                if not isinstance(item, dict) or set(item) != {
+                    "source_vertex",
+                    "target_vertex",
+                }:
+                    raise ValueError("Malformed checkpoint vertex mapping")
+                source = item["source_vertex"]
+                target = item["target_vertex"]
+                if type(source) is not int or type(target) is not int:
+                    raise ValueError(
+                        "Checkpoint vertex mappings must use integers"
+                    )
+                parsed_mapping.append((source, target))
+            record = {
+                "verdict": verdict,
+                "isomorphic_state": referenced_state(
+                    serialized["isomorphic_state"]
+                ),
+                "vertex_isomorphism": tuple(parsed_mapping),
+            }
+        elif "terminal_reason" in serialized:
+            reason = serialized["terminal_reason"]
+            if not isinstance(reason, str) or not reason:
+                raise ValueError("Invalid checkpoint terminal reason")
+            record = {"verdict": verdict, "terminal_reason": reason}
+        elif verdict == RESULT_NON_EVASIVE:
+            winning_vertex = serialized.get("winning_vertex")
+            if type(winning_vertex) is not int or winning_vertex not in vertex_bits:
+                raise ValueError("Invalid checkpoint winning vertex")
+            if (state_key[0] | state_key[1]) & vertex_bits[winning_vertex]:
+                raise ValueError("Checkpoint winning vertex was already decided")
+            record = {
+                "verdict": verdict,
+                "winning_vertex": winning_vertex,
+                "deletion_child": referenced_state(
+                    serialized.get("deletion_child")
+                ),
+                "link_child": referenced_state(serialized.get("link_child")),
+            }
+        else:
+            serialized_failures = serialized.get("failed_children")
+            if not isinstance(serialized_failures, list):
+                raise ValueError("Checkpoint evasive state lacks failed children")
+            failures = []
+            for failure in serialized_failures:
+                if not isinstance(failure, dict):
+                    raise ValueError("Malformed checkpoint failed child")
+                vertex = failure.get("vertex")
+                branch = failure.get("branch")
+                if type(vertex) is not int or vertex not in vertex_bits:
+                    raise ValueError("Invalid checkpoint failed-child vertex")
+                if branch not in {"link", "deletion"}:
+                    raise ValueError("Invalid checkpoint failed-child branch")
+                parsed_failure = {
+                    "vertex": vertex,
+                    "branch": branch,
+                    "child": referenced_state(failure.get("child")),
+                }
+                if "orbit_members" in failure:
+                    members = failure["orbit_members"]
+                    automorphisms = failure.get("orbit_automorphisms")
+                    if not isinstance(members, list) or not isinstance(
+                        automorphisms, list
+                    ):
+                        raise ValueError("Malformed checkpoint orbit evidence")
+                    parsed_failure["orbit_members"] = tuple(members)
+                    parsed_automorphisms = []
+                    for item in automorphisms:
+                        if not isinstance(item, dict):
+                            raise ValueError(
+                                "Malformed checkpoint orbit automorphism"
+                            )
+                        parsed_automorphisms.append(
+                            {
+                                "target_vertex": item.get("target_vertex"),
+                                "vertex_isomorphism": tuple(
+                                    (
+                                        mapping_item.get("source_vertex"),
+                                        mapping_item.get("target_vertex"),
+                                    )
+                                    for mapping_item in item.get(
+                                        "vertex_isomorphism", []
+                                    )
+                                ),
+                            }
+                        )
+                    parsed_failure["orbit_automorphisms"] = (
+                        parsed_automorphisms
+                    )
+                failures.append(parsed_failure)
+            record = {"verdict": verdict, "failed_children": failures}
+        records.append((state_key, record))
+    return (records, id_to_key)
+
+
+class CheckpointManager:
+    """Atomically persist and restore completed exact-search states."""
+
+    def __init__(
+        self,
+        K,
+        vertex_bits,
+        witness_cache,
+        certificate_store,
+        rng,
+    ):
+        self.enabled = CHECKPOINT_PATH is not None
+        self.path = CHECKPOINT_PATH
+        self.K = K
+        self.vertex_bits = vertex_bits
+        self.witness_cache = witness_cache
+        self.certificate_store = certificate_store
+        self.rng = rng
+        self.resume_count = 0
+        self.prior_subcomplexes = 0
+        self.last_completed_count = len(certificate_store)
+        self.last_write_monotonic = time.monotonic()
+        self.owns_path = False
+        if not self.enabled:
+            return
+        if CHECKPOINT_RESUME:
+            if not self.path.is_file():
+                raise FileNotFoundError(
+                    f"Checkpoint file was not found: {self.path}"
+                )
+        elif self.path.exists() and not CHECKPOINT_OVERWRITE:
+            raise FileExistsError(
+                "Checkpoint already exists; set CHECKPOINT_RESUME=true, "
+                "CHECKPOINT_OVERWRITE=true, or choose a new path: "
+                f"{self.path}"
+            )
+
+    def load(self):
+        if not self.enabled or not CHECKPOINT_RESUME:
+            return
+        try:
+            with self.path.open(encoding="utf-8") as checkpoint_file:
+                document = json.load(checkpoint_file)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Cannot read checkpoint: {self.path}") from exc
+        if not isinstance(document, dict):
+            raise ValueError("Checkpoint document must be an object")
+        recorded_checksum = document.get("payload_sha256")
+        payload = {
+            key: value
+            for key, value in document.items()
+            if key != "payload_sha256"
+        }
+        if (
+            not isinstance(recorded_checksum, str)
+            or recorded_checksum != checkpoint_hash_payload(payload)
+        ):
+            raise ValueError("Checkpoint payload checksum does not match")
+        if payload.get("format") != CHECKPOINT_FORMAT:
+            raise ValueError("Unknown checkpoint format")
+        if payload.get("schema_version") != CHECKPOINT_SCHEMA_VERSION:
+            raise ValueError("Unsupported checkpoint schema version")
+        if payload.get("status") not in {
+            "running",
+            "resource_limit",
+            "interrupted",
+            "completed",
+            "error",
+        }:
+            raise ValueError("Checkpoint has an invalid status")
+
+        expected_input = checkpoint_input_record(self.K, self.vertex_bits)
+        if payload.get("input") != expected_input:
+            raise ValueError("Checkpoint input complex does not match")
+        expected_implementation = checkpoint_implementation_record()
+        if payload.get("implementation") != expected_implementation:
+            raise ValueError("Checkpoint implementation hash does not match")
+        expected_configuration = checkpoint_configuration_record()
+        actual_configuration = payload.get("configuration")
+        if actual_configuration != expected_configuration:
+            if isinstance(actual_configuration, dict):
+                changed = sorted(
+                    key
+                    for key in set(actual_configuration) | set(expected_configuration)
+                    if actual_configuration.get(key)
+                    != expected_configuration.get(key)
+                )
+                detail = ", ".join(changed) or "unknown"
+            else:
+                detail = "configuration record"
+            raise ValueError(
+                f"Checkpoint search configuration does not match: {detail}"
+            )
+
+        progress = payload.get("progress")
+        if not isinstance(progress, dict):
+            raise ValueError("Checkpoint progress metadata is missing")
+        records, id_to_key = deserialize_checkpoint_records(
+            progress.get("states"), self.vertex_bits
+        )
+        for state_key, record in records:
+            self.certificate_store._store(state_key, record)
+            if record["verdict"] == RESULT_NON_EVASIVE:
+                self.witness_cache.store(
+                    state_key,
+                    True,
+                    record.get("winning_vertex", _NO_WINNING_VERTEX),
+                )
+
+        failure_lru = progress.get("failure_cache_lru")
+        if not isinstance(failure_lru, list) or len(set(failure_lru)) != len(
+            failure_lru
+        ):
+            raise ValueError("Checkpoint failure-cache LRU is malformed")
+        if len(failure_lru) > WITNESS_CACHE_MAX_FAILURES:
+            raise ValueError("Checkpoint failure-cache LRU exceeds its limit")
+        records_by_key = dict(records)
+        for identifier in failure_lru:
+            if identifier not in id_to_key:
+                raise ValueError(
+                    "Checkpoint failure cache references a missing state"
+                )
+            state_key = id_to_key[identifier]
+            if (
+                records_by_key[state_key]["verdict"]
+                != RESULT_EVASIVE_CERTIFIED
+            ):
+                raise ValueError(
+                    "Checkpoint failure cache references a positive state"
+                )
+            self.witness_cache.store(
+                state_key, False, _NO_WINNING_VERTEX
+            )
+
+        rng_state = progress.get("random_state")
+        try:
+            self.rng.setstate(checkpoint_random_state_from_json(rng_state))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Checkpoint random state is malformed") from exc
+
+        prior_subcomplexes = progress.get("total_subcomplexes_examined")
+        prior_resume_count = progress.get("resume_count")
+        restricted_vertices_skipped = progress.get(
+            "restricted_vertices_skipped"
+        )
+        if (
+            type(prior_subcomplexes) is not int
+            or prior_subcomplexes < 0
+            or type(prior_resume_count) is not int
+            or prior_resume_count < 0
+            or type(restricted_vertices_skipped) is not int
+            or restricted_vertices_skipped < 0
+        ):
+            raise ValueError("Checkpoint cumulative counters are malformed")
+        self.prior_subcomplexes = prior_subcomplexes
+        self.resume_count = prior_resume_count + 1
+        search_stats.checkpoint_prior_subcomplexes = prior_subcomplexes
+        search_stats.checkpoint_resume_count = self.resume_count
+        search_stats.checkpoint_loaded_states = len(records)
+        search_stats.restricted_vertices_skipped = (
+            restricted_vertices_skipped
+        )
+
+        obstruction_profiles = progress.get("obstruction_profiles", {})
+        field_profiles = progress.get("homology_field_profiles", {})
+        if not isinstance(obstruction_profiles, dict) or not isinstance(
+            field_profiles, dict
+        ):
+            raise ValueError("Checkpoint profiling records are malformed")
+        search_stats.obstruction_profiles = OrderedDict(
+            (name, dict(profile))
+            for name, profile in obstruction_profiles.items()
+        )
+        search_stats.homology_field_profiles = OrderedDict(
+            (int(prime), dict(profile))
+            for prime, profile in field_profiles.items()
+        )
+
+        self.last_completed_count = len(self.certificate_store)
+        self.last_write_monotonic = time.monotonic()
+        self.owns_path = True
+        print(
+            f"Resumed checkpoint: {self.path} "
+            f"({len(records):,} completed states; "
+            f"status={payload['status']})",
+            flush=True,
+        )
+
+    def _progress_record(self):
+        serialized_states = [
+            serialize_certificate_state(state_key, record)
+            for state_key, record in self.certificate_store.items()
+        ]
+        serialized_states.sort(key=lambda record: record["id"])
+        return {
+            "states": serialized_states,
+            "failure_cache_lru": [
+                certificate_state_id(state_key)
+                for state_key in self.witness_cache.failure_state_keys()
+            ],
+            "random_state": checkpoint_random_state_to_json(
+                self.rng.getstate()
+            ),
+            "total_subcomplexes_examined": int(
+                self.prior_subcomplexes
+                + search_stats.subcomplexes_examined
+            ),
+            "resume_count": int(self.resume_count),
+            "restricted_vertices_skipped": int(
+                search_stats.restricted_vertices_skipped
+            ),
+            "obstruction_profiles": search_stats.obstruction_profiles,
+            "homology_field_profiles": {
+                str(prime): profile
+                for prime, profile in search_stats.homology_field_profiles.items()
+            },
+        }
+
+    def write(self, status, stop=None):
+        if not self.enabled:
+            return
+        if status not in {
+            "running",
+            "resource_limit",
+            "interrupted",
+            "completed",
+            "error",
+        }:
+            raise ValueError(f"Invalid checkpoint status: {status}")
+        search_stats.checkpoint_writes += 1
+        payload = checkpoint_json_safe({
+            "format": CHECKPOINT_FORMAT,
+            "schema_version": CHECKPOINT_SCHEMA_VERSION,
+            "status": status,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "input": checkpoint_input_record(self.K, self.vertex_bits),
+            "implementation": checkpoint_implementation_record(),
+            "configuration": checkpoint_configuration_record(),
+            "resource_limits": {
+                "search_state_limit": int(SEARCH_STATE_LIMIT),
+                "search_time_limit_seconds": float(
+                    SEARCH_TIME_LIMIT_SECONDS
+                ),
+            },
+            "stop": stop,
+            "progress": self._progress_record(),
+        })
+        document = dict(payload)
+        document["payload_sha256"] = checkpoint_hash_payload(payload)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = self.path.with_name(self.path.name + ".tmp")
+        try:
+            with temporary_path.open("w", encoding="utf-8") as output_file:
+                json.dump(document, output_file, indent=2, sort_keys=True)
+                output_file.write("\n")
+                output_file.flush()
+                os.fsync(output_file.fileno())
+            os.replace(temporary_path, self.path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+        self.owns_path = True
+        self.last_completed_count = len(self.certificate_store)
+        self.last_write_monotonic = time.monotonic()
+        print(
+            f"Checkpoint written: {self.path} "
+            f"({self.last_completed_count:,} completed states; "
+            f"status={status})",
+            flush=True,
+        )
+
+    def maybe_write(self):
+        if not self.enabled:
+            return
+        completed_count = len(self.certificate_store)
+        if completed_count <= self.last_completed_count:
+            return
+        states_due = (
+            CHECKPOINT_INTERVAL_STATES > 0
+            and completed_count - self.last_completed_count
+            >= CHECKPOINT_INTERVAL_STATES
+        )
+        seconds_due = (
+            CHECKPOINT_INTERVAL_SECONDS > 0
+            and time.monotonic() - self.last_write_monotonic
+            >= CHECKPOINT_INTERVAL_SECONDS
+        )
+        if states_due or seconds_due:
+            self.write("running")
 
 
 def build_certificate_document(
@@ -2259,6 +3000,16 @@ def build_certificate_document(
             "search_state_limit": int(SEARCH_STATE_LIMIT),
             "search_time_limit_seconds": float(
                 SEARCH_TIME_LIMIT_SECONDS
+            ),
+            "checkpoint_resume_count": int(
+                search_stats.checkpoint_resume_count
+            ),
+            "checkpoint_loaded_states": int(
+                search_stats.checkpoint_loaded_states
+            ),
+            "checkpoint_total_subcomplexes_examined": int(
+                search_stats.checkpoint_prior_subcomplexes
+                + search_stats.subcomplexes_examined
             ),
             "protected_vertices": sorted(PROTECTED_VERTICES),
             "protected_vertex_policy": PROTECTED_VERTEX_POLICY,
@@ -2367,17 +3118,26 @@ rng = random.Random(seed)
     search_succeeded,
     certificate_store,
     vertex_bits,
-    resource_limit,
+    stop_reason,
 ) = is_nonevasive(K, strategy=SEARCH_STRATEGY, rng=rng)
 print("\n" + "="*50, flush=True)
-if resource_limit is not None:
+if isinstance(stop_reason, SearchInterruptionRequested):
+    final_result = RESULT_INCONCLUSIVE_INTERRUPTED
+    print(
+        "⚠️ The search stopped after an interruption signal. "
+        "Completed states were checkpointed; no mathematical conclusion "
+        "was drawn.",
+        flush=True,
+    )
+    print(f"Interruption signal: {stop_reason.signal_name}", flush=True)
+elif stop_reason is not None:
     final_result = RESULT_INCONCLUSIVE_RESOURCE_LIMIT
     print(
         "⚠️ The search reached a configured resource limit. "
         "No mathematical conclusion was drawn.",
         flush=True,
     )
-    print(f"Resource limit reached: {resource_limit.kind}", flush=True)
+    print(f"Resource limit reached: {stop_reason.kind}", flush=True)
 elif search_succeeded:
     final_result = RESULT_NON_EVASIVE
     root_record = certificate_store.get((int(0), int(0)))
@@ -2583,6 +3343,19 @@ print(
     flush=True,
 )
 print(
+    f"Checkpointing: "
+    f"{'disabled' if CHECKPOINT_PATH is None else str(CHECKPOINT_PATH)}; "
+    f"{search_stats.checkpoint_writes:,} writes; "
+    f"{search_stats.checkpoint_loaded_states:,} states loaded; "
+    f"resume count {search_stats.checkpoint_resume_count:,}",
+    flush=True,
+)
+print(
+    f"Cumulative cache misses across checkpoint sessions: "
+    f"{search_stats.checkpoint_prior_subcomplexes + search_stats.subcomplexes_examined:,}",
+    flush=True,
+)
+print(
     f"Resource limit reached: "
     f"{search_stats.resource_limit_kind or 'none'}",
     flush=True,
@@ -2691,6 +3464,14 @@ print(
     f"{search_stats.sage_state_materializations}; "
     f"search_state_limit={SEARCH_STATE_LIMIT}; "
     f"search_time_limit_seconds={SEARCH_TIME_LIMIT_SECONDS:g}; "
+    f"checkpoint_enabled={CHECKPOINT_PATH is not None}; "
+    f"checkpoint_writes={search_stats.checkpoint_writes}; "
+    f"checkpoint_loaded_states="
+    f"{search_stats.checkpoint_loaded_states}; "
+    f"checkpoint_resume_count="
+    f"{search_stats.checkpoint_resume_count}; "
+    f"total_subcomplexes_examined="
+    f"{search_stats.checkpoint_prior_subcomplexes + search_stats.subcomplexes_examined}; "
     f"resource_limit="
     f"{search_stats.resource_limit_kind or 'none'}; "
     f"link_first_rejections={search_stats.link_first_rejections}; "
