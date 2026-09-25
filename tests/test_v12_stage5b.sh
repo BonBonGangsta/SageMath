@@ -100,8 +100,8 @@ with open(enabled_path, encoding="utf-8") as input_file:
     enabled = json.load(input_file)
 with open(disabled_path, encoding="utf-8") as input_file:
     disabled = json.load(input_file)
-assert enabled["schema_version"] == 3
-assert disabled["schema_version"] == 3
+assert enabled["schema_version"] == 4
+assert disabled["schema_version"] == 4
 assert enabled["result"] == disabled["result"] == "NON_EVASIVE"
 aliases = [state for state in enabled["states"] if "isomorphic_state" in state]
 assert aliases
@@ -160,6 +160,10 @@ write_variant(
     "schema2_isomorphism",
     lambda document, record: document.__setitem__("schema_version", 2),
 )
+
+enabled["schema_version"] = 3
+with open(f"{output_dir}/legacy_schema3.json", "w", encoding="utf-8") as output_file:
+    json.dump(enabled, output_file)
 ' \
     "${TEST_OUTPUT_DIR}/true.log" \
     "${TEST_OUTPUT_DIR}/false.log" \
@@ -185,6 +189,15 @@ for corrupted in \
         "${TEST_OUTPUT_DIR}/${corrupted}.log"
 done
 
+"${SAGE_BIN}" "${VERIFIER}" \
+    "${FACETS}" "${TEST_OUTPUT_DIR}/legacy_schema3.json" \
+    >"${TEST_OUTPUT_DIR}/legacy_schema3.log" 2>&1 || {
+    cat "${TEST_OUTPUT_DIR}/legacy_schema3.log" >&2
+    exit 1
+}
+grep -Fq 'CERTIFICATE_VALID: NON_EVASIVE;' \
+    "${TEST_OUTPUT_DIR}/legacy_schema3.log"
+
 if ISOMORPHISM_CACHE_MAX_FAILURES=-1 \
     FACETS_FILE="${FACETS}" \
     KNOT_NAME=stage5b_invalid_limit \
@@ -200,4 +213,5 @@ grep -Fq 'ISOMORPHISM_CACHE_MAX_FAILURES cannot be negative' \
 echo "PASS: isomorphism caching reduced materialized states on Rudin's ball"
 echo "PASS: cache-on and cache-off conclusions independently verified"
 echo "PASS: malformed isomorphism aliases were rejected"
+echo "PASS: schema-3 isomorphism certificates remain supported"
 echo "All Stage 5B tests passed."

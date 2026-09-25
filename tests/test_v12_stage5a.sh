@@ -91,7 +91,7 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as input_file:
     document = json.load(input_file)
 aliases = [state for state in document["states"] if "equivalent_state" in state]
-assert document["schema_version"] == 3
+assert document["schema_version"] == 4
 assert len(aliases) == 1
 assert all(state["verdict"] == "NON_EVASIVE" for state in aliases)
 ' "${POSITIVE_CERTIFICATE}"
@@ -132,8 +132,8 @@ with open(enabled_path, encoding="utf-8") as input_file:
     enabled = json.load(input_file)
 with open(disabled_path, encoding="utf-8") as input_file:
     disabled = json.load(input_file)
-assert enabled["schema_version"] == 3
-assert disabled["schema_version"] == 3
+assert enabled["schema_version"] == 4
+assert disabled["schema_version"] == 4
 assert enabled["result"] == disabled["result"] == "EVASIVE_CERTIFIED"
 aliases = [state for state in enabled["states"] if "equivalent_state" in state]
 assert len(aliases) == 1

@@ -29,6 +29,7 @@ NORMALIZED_COMPLEX_CACHE=${NORMALIZED_COMPLEX_CACHE:-true}
 NORMALIZED_CACHE_MAX_FAILURES=${NORMALIZED_CACHE_MAX_FAILURES:-100000}
 ISOMORPHISM_COMPLEX_CACHE=${ISOMORPHISM_COMPLEX_CACHE:-false}
 ISOMORPHISM_CACHE_MAX_FAILURES=${ISOMORPHISM_CACHE_MAX_FAILURES:-100000}
+AUTOMORPHISM_ORBIT_PRUNING=${AUTOMORPHISM_ORBIT_PRUNING:-false}
 BENCHMARK_RUN_ID=${BENCHMARK_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 BENCHMARK_OUTPUT_DIR=${BENCHMARK_OUTPUT_DIR:-"${PROJECT_DIR}/outputs/benchmarks/${KNOT_NAME}_${BENCHMARK_RUN_ID}"}
 
@@ -47,7 +48,7 @@ cp "${PROJECT_DIR}/scripts/simplicial_isomorphism.py" "${TEMP_DIR}/"
 
 SUMMARY="${BENCHMARK_OUTPUT_DIR}/summary.tsv"
 printf '%s\n' \
-    $'engine\tresult\telapsed_seconds\tpeak_rss_mib\tstates\trecursive_calls\tcache_hits\tnormalized_cache_hits\tnormalized_cache_enabled\tisomorphism_cache_hits\tisomorphism_cache_enabled\tresource_limit\tcertificate' \
+    $'engine\tresult\telapsed_seconds\tpeak_rss_mib\tstates\trecursive_calls\tcache_hits\tnormalized_cache_hits\tnormalized_cache_enabled\tisomorphism_cache_hits\tisomorphism_cache_enabled\tautomorphism_vertices_pruned\tautomorphism_orbit_pruning\tresource_limit\tcertificate' \
     >"${SUMMARY}"
 
 extract_field() {
@@ -74,6 +75,7 @@ for engine in bitset sage_reference; do
     NORMALIZED_CACHE_MAX_FAILURES="${NORMALIZED_CACHE_MAX_FAILURES}" \
     ISOMORPHISM_COMPLEX_CACHE="${ISOMORPHISM_COMPLEX_CACHE}" \
     ISOMORPHISM_CACHE_MAX_FAILURES="${ISOMORPHISM_CACHE_MAX_FAILURES}" \
+    AUTOMORPHISM_ORBIT_PRUNING="${AUTOMORPHISM_ORBIT_PRUNING}" \
     STATE_ENGINE="${engine}" \
     SEARCH_STATE_LIMIT="${BENCHMARK_STATE_LIMIT}" \
     SEARCH_TIME_LIMIT_SECONDS="${BENCHMARK_TIME_LIMIT_SECONDS}" \
@@ -104,6 +106,10 @@ for engine in bitset sage_reference; do
         "${final_line}" isomorphism_cache_hits)
     isomorphism_cache_enabled=$(extract_field \
         "${final_line}" isomorphism_cache_enabled)
+    automorphism_vertices_pruned=$(extract_field \
+        "${final_line}" automorphism_vertices_pruned)
+    automorphism_orbit_pruning=$(extract_field \
+        "${final_line}" automorphism_orbit_pruning)
     resource_limit=$(extract_field "${final_line}" resource_limit)
 
     certificate_status=none
@@ -119,7 +125,7 @@ for engine in bitset sage_reference; do
         exit 1
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "${engine}" \
         "${result}" \
         "${elapsed}" \
@@ -131,6 +137,8 @@ for engine in bitset sage_reference; do
         "${normalized_cache_enabled}" \
         "${isomorphism_cache_hits}" \
         "${isomorphism_cache_enabled}" \
+        "${automorphism_vertices_pruned}" \
+        "${automorphism_orbit_pruning}" \
         "${resource_limit}" \
         "${certificate_status}" \
         >>"${SUMMARY}"

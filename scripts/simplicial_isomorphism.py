@@ -14,18 +14,11 @@ from sage.all import Graph
 from simplicial_bitset import normalize_facet_masks, vertices_mask
 
 
-def canonical_incidence_key(
+def _colored_incidence_graph(
     facet_masks,
     vertex_order,
     distinguished_vertices=(),
 ):
-    """Return an exact isomorphism key and a label-to-canonical map.
-
-    ``facet_masks`` uses bit positions from ``vertex_order``.  Only vertices
-    present in the normalized facets participate in the incidence graph.
-    The map in the return value sends each present root vertex label to its
-    canonical incidence-graph label.
-    """
     order = tuple(vertex_order)
     if len(set(order)) != len(order):
         raise ValueError("vertex_order repeats a vertex")
@@ -82,6 +75,47 @@ def canonical_incidence_key(
         )
         if cell
     ]
+    return (
+        order,
+        normalized_facets,
+        present_positions,
+        vertex_nodes,
+        facet_nodes,
+        incidence_graph,
+        partition,
+        (
+            len(ordinary_vertex_nodes),
+            len(distinguished_vertex_nodes),
+        ),
+    )
+
+
+def canonical_incidence_key(
+    facet_masks,
+    vertex_order,
+    distinguished_vertices=(),
+):
+    """Return an exact isomorphism key and a label-to-canonical map.
+
+    ``facet_masks`` uses bit positions from ``vertex_order``.  Only vertices
+    present in the normalized facets participate in the incidence graph.
+    The map in the return value sends each present root vertex label to its
+    canonical incidence-graph label.
+    """
+    (
+        order,
+        _normalized_facets,
+        present_positions,
+        _vertex_nodes,
+        facet_nodes,
+        incidence_graph,
+        partition,
+        vertex_color_sizes,
+    ) = _colored_incidence_graph(
+        facet_masks,
+        vertex_order,
+        distinguished_vertices=distinguished_vertices,
+    )
     canonical_graph, certificate = incidence_graph.canonical_label(
         partition=partition,
         algorithm="sage",
@@ -95,10 +129,7 @@ def canonical_incidence_key(
         )
     )
     key = (
-        (
-            len(ordinary_vertex_nodes),
-            len(distinguished_vertex_nodes),
-        ),
+        vertex_color_sizes,
         len(facet_nodes),
         canonical_edges,
     )
@@ -107,6 +138,115 @@ def canonical_incidence_key(
         for position in present_positions
     }
     return (key, label_to_canonical)
+
+
+def automorphism_vertex_orbits(
+    facet_masks,
+    vertex_order,
+    candidate_vertices=None,
+    distinguished_vertices=(),
+):
+    """Return candidate orbits with explicit automorphisms from each rep.
+
+    Orbit representatives follow ``candidate_vertices`` order.  Each returned
+    automorphism is a complete source-to-target map on the complex's present
+    vertices and sends the orbit representative to its named member.
+    """
+    (
+        order,
+        _normalized_facets,
+        present_positions,
+        vertex_nodes,
+        _facet_nodes,
+        incidence_graph,
+        partition,
+        _vertex_color_sizes,
+    ) = _colored_incidence_graph(
+        facet_masks,
+        vertex_order,
+        distinguished_vertices=distinguished_vertices,
+    )
+    present_labels = tuple(int(order[position]) for position in present_positions)
+    if candidate_vertices is None:
+        candidates = present_labels
+    else:
+        candidates = tuple(int(vertex) for vertex in candidate_vertices)
+    if len(set(candidates)) != len(candidates):
+        raise ValueError("candidate_vertices repeats a vertex")
+    if not set(candidates).issubset(present_labels):
+        raise ValueError("candidate_vertices contains an absent vertex")
+
+    label_to_node = {
+        int(order[position]): ("vertex", position)
+        for position in present_positions
+    }
+    node_to_label = {
+        node: label for label, node in label_to_node.items()
+    }
+    graph_nodes = tuple(incidence_graph.vertices(sort=False))
+    group = incidence_graph.automorphism_group(
+        partition=partition,
+        algorithm="sage",
+    )
+    generators = tuple(group.gens())
+
+    covered = set()
+    results = []
+    for representative in candidates:
+        if representative in covered:
+            continue
+        representative_node = label_to_node[representative]
+        identity = {node: node for node in graph_nodes}
+        transport_by_node = {representative_node: identity}
+        pending = [representative_node]
+        while pending:
+            current_node = pending.pop()
+            current_transport = transport_by_node[current_node]
+            for generator in generators:
+                next_node = generator(current_node)
+                if next_node in transport_by_node:
+                    continue
+                transport_by_node[next_node] = {
+                    node: generator(image)
+                    for node, image in current_transport.items()
+                }
+                pending.append(next_node)
+
+        orbit_labels = {
+            node_to_label[node]
+            for node in transport_by_node
+            if node in node_to_label
+        }
+        candidate_orbit = tuple(
+            vertex for vertex in candidates if vertex in orbit_labels
+        )
+        if orbit_labels != set(candidate_orbit):
+            raise ValueError(
+                "candidate vertices do not contain a complete colored orbit"
+            )
+
+        automorphisms = {}
+        for member in candidate_orbit:
+            transport = transport_by_node[label_to_node[member]]
+            automorphisms[member] = tuple(
+                sorted(
+                    (
+                        source_label,
+                        node_to_label[transport[source_node]],
+                    )
+                    for source_label, source_node in label_to_node.items()
+                )
+            )
+        covered.update(candidate_orbit)
+        results.append(
+            {
+                "representative": representative,
+                "members": candidate_orbit,
+                "automorphisms": automorphisms,
+            }
+        )
+
+    return tuple(results)
 
 
 def canonical_map_inverse(label_to_canonical):

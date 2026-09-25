@@ -205,6 +205,7 @@ def verify_vertex_isomorphism(source_K, target_K, serialized_mapping):
         raise VerificationError(
             "Vertex mapping is not a simplicial isomorphism"
         )
+    return mapping
 
 
 def verify_certificate(facets_path, certificate_path):
@@ -215,7 +216,7 @@ def verify_certificate(facets_path, certificate_path):
     if document.get("format") != "simplicial_nonevasiveness_certificate":
         raise VerificationError("Unknown certificate format")
     schema_version = document.get("schema_version")
-    if schema_version not in {1, 2, 3}:
+    if schema_version not in {1, 2, 3, 4}:
         raise VerificationError("Unsupported certificate schema version")
     certificate_kind = document.get("certificate_kind")
     expected_results = {
@@ -411,7 +412,7 @@ def verify_certificate(facets_path, certificate_path):
                     f"Evasive state lacks failed children: {identifier}"
                 )
             current_vertices = {int(vertex) for vertex in K.vertices()}
-            failures_by_vertex = {}
+            covered_vertices = set()
             for failure in failed_children:
                 if not isinstance(failure, dict):
                     raise VerificationError("Malformed failed-child record")
@@ -419,13 +420,85 @@ def verify_certificate(facets_path, certificate_path):
                 branch = failure.get("branch")
                 if type(vertex) is not int or vertex not in current_vertices:
                     raise VerificationError("Invalid failed-child vertex")
-                if vertex in failures_by_vertex:
-                    raise VerificationError(
-                        f"Vertex {vertex} is repeated in an evasive state"
-                    )
                 if branch not in {"deletion", "link"}:
                     raise VerificationError("Invalid failed-child branch")
-                failures_by_vertex[vertex] = failure
+
+                has_orbit_members = "orbit_members" in failure
+                has_orbit_automorphisms = (
+                    "orbit_automorphisms" in failure
+                )
+                if has_orbit_members != has_orbit_automorphisms:
+                    raise VerificationError(
+                        "Orbit failure requires members and automorphisms"
+                    )
+                if has_orbit_members:
+                    if schema_version < 4:
+                        raise VerificationError(
+                            "Orbit failures require certificate schema 4"
+                        )
+                    orbit_members = failure["orbit_members"]
+                    if (
+                        not isinstance(orbit_members, list)
+                        or any(type(member) is not int for member in orbit_members)
+                        or len(set(orbit_members)) != len(orbit_members)
+                        or vertex not in orbit_members
+                        or not set(orbit_members).issubset(current_vertices)
+                    ):
+                        raise VerificationError("Invalid automorphism orbit")
+
+                    orbit_automorphisms = failure[
+                        "orbit_automorphisms"
+                    ]
+                    if not isinstance(orbit_automorphisms, list):
+                        raise VerificationError(
+                            "Orbit automorphisms must be a list"
+                        )
+                    maps_by_target = {}
+                    for item in orbit_automorphisms:
+                        if not isinstance(item, dict) or set(item) != {
+                            "target_vertex",
+                            "vertex_isomorphism",
+                        }:
+                            raise VerificationError(
+                                "Malformed orbit-automorphism record"
+                            )
+                        target_vertex = item["target_vertex"]
+                        if (
+                            type(target_vertex) is not int
+                            or target_vertex in maps_by_target
+                            or target_vertex == vertex
+                        ):
+                            raise VerificationError(
+                                "Invalid orbit-automorphism target"
+                            )
+                        mapping = verify_vertex_isomorphism(
+                            K,
+                            K,
+                            item["vertex_isomorphism"],
+                        )
+                        if mapping[vertex] != target_vertex:
+                            raise VerificationError(
+                                "Orbit automorphism does not map its "
+                                "representative to the target"
+                            )
+                        maps_by_target[target_vertex] = mapping
+
+                    expected_targets = set(orbit_members) - {vertex}
+                    if set(maps_by_target) != expected_targets:
+                        raise VerificationError(
+                            "Orbit automorphisms do not justify every member"
+                        )
+                    covered_by_failure = set(orbit_members)
+                else:
+                    covered_by_failure = {vertex}
+
+                overlap = covered_vertices & covered_by_failure
+                if overlap:
+                    raise VerificationError(
+                        "Evasive-state vertex coverage overlaps; "
+                        f"vertices={sorted(overlap)}"
+                    )
+                covered_vertices.update(covered_by_failure)
 
                 vertex_bit = vertex_bits[vertex]
                 if (linked_mask | deleted_mask) & vertex_bit:
@@ -458,9 +531,9 @@ def verify_certificate(facets_path, certificate_path):
                         f"{branch.capitalize()} transition is incorrect"
                     )
 
-            if set(failures_by_vertex) != current_vertices:
-                missing = sorted(current_vertices - set(failures_by_vertex))
-                extra = sorted(set(failures_by_vertex) - current_vertices)
+            if covered_vertices != current_vertices:
+                missing = sorted(current_vertices - covered_vertices)
+                extra = sorted(covered_vertices - current_vertices)
                 raise VerificationError(
                     "Evasive state does not cover every vertex; "
                     f"missing={missing}, extra={extra}"

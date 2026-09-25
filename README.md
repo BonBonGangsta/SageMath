@@ -213,16 +213,43 @@ isomorphism aliases, but this very small run took about 0.13 seconds instead
 of 0.11 seconds. Enable it for representative bounded comparisons before a
 long search.
 
-Current certificates use schema version 3. Exact labeled reuse records an
+Stage 5C adds separate, opt-in automorphism-orbit pruning:
+
+```bash
+AUTOMORPHISM_ORBIT_PRUNING=true
+```
+
+At each nonterminal state, it tests only the first vertex in each
+color-preserving automorphism orbit. Evasiveness certificates include a full
+facet-preserving automorphism from the tested representative to every skipped
+vertex, so the independent verifier can confirm complete coverage without
+trusting the search program's orbit calculation. This optimization is also
+disabled by default pending benchmarks on representative unresolved inputs.
+
+Current certificates use schema version 4. Exact labeled reuse records an
 `equivalent_state` edge; isomorphic reuse records an `isomorphic_state` edge
 and the complete source-to-target vertex bijection. The independent verifier
 reconstructs both states and verifies equality or the claimed simplicial
-isomorphism directly. Legacy schema-1 and schema-2 certificates remain
-supported. Automorphism-orbit branch reduction is a separate future stage.
+isomorphism directly. Orbit-reduced failures additionally record orbit members
+and explicit automorphisms. Legacy schema-1 through schema-3 certificates
+remain supported under their original feature limits.
+
+On the symmetric suspension regression fixture with both memoization layers
+disabled, orbit pruning reduced Sage state materializations from 24 to 16 and
+vertex attempts from 23 to 15. Both evasiveness certificates independently
+verified. This small run improved from about 0.10 to 0.09 seconds, but it is
+not a performance guarantee for larger complexes.
 
 Run the exhaustive canonical-label and cache-on/off regression suite with:
 
 ```bash
 docker compose run --rm --entrypoint /bin/bash sagemath-runner \
   -c 'cd /workspace && bash tests/test_v12_stage5b.sh'
+```
+
+Run the exhaustive automorphism-orbit and negative-certificate suite with:
+
+```bash
+docker compose run --rm --entrypoint /bin/bash sagemath-runner \
+  -c 'cd /workspace && bash tests/test_v12_stage5c.sh'
 ```

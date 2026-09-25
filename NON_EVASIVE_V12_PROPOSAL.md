@@ -255,9 +255,9 @@ root. The local artifacts are stored under
 
 ### Stage 5: Improve memoization and exploit symmetry
 
-Status: in progress; Stage 5A normalized-complex memoization completed on
-2026-09-24 and Stage 5B canonical isomorphism reuse completed on 2026-09-25.
-Automorphism-orbit pruning remains planned as Stage 5C.
+Status: completed; Stage 5A normalized-complex memoization completed on
+2026-09-24, with Stage 5B canonical isomorphism reuse and Stage 5C
+automorphism-orbit pruning completed on 2026-09-25.
 
 - Cache by normalized resulting complexes in addition to operation history.
 - Investigate canonical labeling of the vertex-facet incidence graph so that
@@ -330,6 +330,36 @@ Stage 5B validation performed:
 - Confirmed that missing targets, absent or partial maps, out-of-range target
   labels, mixed proof forms, and schema-2 isomorphism records are rejected.
   Legacy schema-1 and schema-2 support remains covered by earlier suites.
+
+Stage 5C validation performed:
+
+- Added optional automorphism-orbit pruning after terminal classification and
+  vertex ordering. The first candidate in each color-preserving orbit is used
+  as its representative, so existing strategies still determine representative
+  order.
+- Reused the colored vertex-facet incidence model. In strict protected mode,
+  protected and unprotected vertices cannot share an orbit, preserving the
+  restricted search semantics.
+- Extended certificates to schema version 4. Each pruned negative obligation
+  records its complete orbit and an explicit simplicial automorphism from the
+  tested representative to every skipped vertex.
+- Extended the independent verifier to check every automorphism is a total
+  vertex bijection, preserves the complete facet set, maps the representative
+  to the claimed member, has no overlapping coverage, and collectively covers
+  every vertex. The verifier does not trust Sage's orbit result from the search.
+- Exhaustively compared orbit partitions with an independent brute-force
+  permutation implementation for all 189 labeled complexes on at most four
+  vertices and checked 641 explicit maps. Colored candidate coverage also
+  passed.
+- On the symmetric suspension fixture with both memoization layers disabled,
+  orbit pruning reduced materialized states from 24 to 16 and vertex attempts
+  from 23 to 15. Both runs returned `EVASIVE_CERTIFIED` and independently
+  verified; the orbit certificate used one explicit automorphism.
+- Rejected missing orbit fields, missing automorphisms, invalid targets,
+  incorrect representative images, broken bijections, and schema-3 orbit
+  records. Orbit-free schema-3 certificates remain supported.
+- Kept `AUTOMORPHISM_ORBIT_PRUNING=false` as the default because automorphism
+  computation can outweigh saved branching on asymmetric or small states.
 
 ### Stage 6: Improve branching and obstruction scheduling
 
@@ -425,3 +455,4 @@ correctness, certificates, and checkpointing.
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 4C: added sound state/time limits and a non-overwriting sequential engine benchmark runner. | State and time stops returned `INCONCLUSIVE_RESOURCE_LIMIT` without certificates; bounded bitset and Sage-reference smoke runs produced an auditable summary. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 5A: cached exact labeled complexes across different link/deletion histories and added schema-2 equivalence proof edges. | Cache-on/off results verified; the suspension fixture fell from 24 to 16 materializations; positive and negative aliases verified; corrupt aliases were rejected. |
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 5B: added opt-in canonical isomorphism memoization and schema-3 bijection proof edges. | Exhaustive keys matched brute force on 189 small complexes; Rudin's ball fell from 57 to 43 materializations; cache-on/off certificates verified; malformed maps were rejected. |
+| 2026-09-25 | `feature/nonevasive-v12` | Stage 5C: added opt-in automorphism-orbit pruning and schema-4 orbit justifications. | Exhaustive orbits and 641 maps matched brute force; the suspension fixture fell from 24 to 16 materializations; corrupt orbit evidence was rejected. |

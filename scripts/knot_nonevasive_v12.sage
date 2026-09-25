@@ -21,6 +21,7 @@ if str(SCRIPT_DIRECTORY) not in sys.path:
 
 from simplicial_bitset import RootBitsetComplex
 from simplicial_isomorphism import (
+    automorphism_vertex_orbits,
     canonical_incidence_key,
     canonical_map_inverse,
     vertex_isomorphism,
@@ -193,6 +194,9 @@ NORMALIZED_COMPLEX_CACHE = get_boolean_environment_setting(
 ISOMORPHISM_COMPLEX_CACHE = get_boolean_environment_setting(
     "ISOMORPHISM_COMPLEX_CACHE", False
 )
+AUTOMORPHISM_ORBIT_PRUNING = get_boolean_environment_setting(
+    "AUTOMORPHISM_ORBIT_PRUNING", False
+)
 
 
 # Adaptive homology policy. Integral homology is always used at the root
@@ -321,6 +325,10 @@ class SearchStats:
         self.isomorphism_cache_evictions = 0
         self.isomorphism_key_computations = 0
         self.certificate_isomorphism_aliases = 0
+        self.automorphism_orbit_computations = 0
+        self.automorphism_orbits = 0
+        self.automorphism_vertices_pruned = 0
+        self.certificate_orbit_automorphisms = 0
         self.terminal_states_classified = 0
         self.deepest_path = 0
         self.link_recursive_calls = 0
@@ -666,16 +674,30 @@ class CertificateStore:
         )
 
     def store_failure(self, state_key, failed_children):
+        serialized_failures = []
+        for failure in failed_children:
+            serialized_failure = {
+                "vertex": int(failure["vertex"]),
+                "branch": failure["branch"],
+                "child": failure["child"],
+            }
+            if "orbit_members" in failure:
+                serialized_failure["orbit_members"] = tuple(
+                    int(member) for member in failure["orbit_members"]
+                )
+                serialized_failure["orbit_automorphisms"] = [
+                    {
+                        "target_vertex": int(item["target_vertex"]),
+                        "vertex_isomorphism": tuple(
+                            item["vertex_isomorphism"]
+                        ),
+                    }
+                    for item in failure["orbit_automorphisms"]
+                ]
+            serialized_failures.append(serialized_failure)
         record = {
             "verdict": RESULT_EVASIVE_CERTIFIED,
-            "failed_children": [
-                {
-                    "vertex": int(failure["vertex"]),
-                    "branch": failure["branch"],
-                    "child": failure["child"],
-                }
-                for failure in failed_children
-            ],
+            "failed_children": serialized_failures,
         }
         existing = self._records.get(state_key)
         if existing is None:
@@ -855,6 +877,19 @@ def log_heartbeat(
         ),
         "isomorphism_cache_key_format": (
             "colored_vertex_facet_incidence_canonical_graph"
+        ),
+        "automorphism_orbit_pruning": bool(
+            AUTOMORPHISM_ORBIT_PRUNING
+        ),
+        "automorphism_orbit_computations": int(
+            search_stats.automorphism_orbit_computations
+        ),
+        "automorphism_orbits": int(search_stats.automorphism_orbits),
+        "automorphism_vertices_pruned": int(
+            search_stats.automorphism_vertices_pruned
+        ),
+        "certificate_orbit_automorphisms": int(
+            search_stats.certificate_orbit_automorphisms
         ),
         # "paths_completed" is retained as the user-facing short name. More
         # precisely, it counts terminal cache-miss classifications. A state
@@ -1242,6 +1277,32 @@ def classify_nonevasive_state(K, depth=0, is_link_state=False):
 
     return (None, None)
 
+
+def failed_child_record(vertex, branch, child_state, orbit_record=None):
+    record = {
+        "vertex": int(vertex),
+        "branch": branch,
+        "child": child_state,
+    }
+    if orbit_record is not None:
+        members = tuple(int(member) for member in orbit_record["members"])
+        record["orbit_members"] = members
+        record["orbit_automorphisms"] = [
+            {
+                "target_vertex": int(member),
+                "vertex_isomorphism": tuple(
+                    orbit_record["automorphisms"][member]
+                ),
+            }
+            for member in members
+            if member != vertex
+        ]
+        search_stats.certificate_orbit_automorphisms += len(
+            record["orbit_automorphisms"]
+        )
+    return record
+
+
 def find_nonevasive_witness(
     root_K,
     root_bitset,
@@ -1396,8 +1457,34 @@ def find_nonevasive_witness(
         root_distances=root_distances,
     )
     enforce_search_time_limit()
+    if AUTOMORPHISM_ORBIT_PRUNING:
+        search_stats.automorphism_orbit_computations += 1
+        orbit_records = automorphism_vertex_orbits(
+            normalized_facets,
+            root_bitset.vertex_order,
+            candidate_vertices=vertices,
+            distinguished_vertices=(
+                PROTECTED_VERTICES
+                if PROTECTED_VERTEX_POLICY == "restrict"
+                else ()
+            ),
+        )
+        search_stats.automorphism_orbits += len(orbit_records)
+        search_stats.automorphism_vertices_pruned += (
+            len(vertices) - len(orbit_records)
+        )
+    else:
+        orbit_records = tuple(
+            {
+                "representative": vertex,
+                "members": (vertex,),
+                "automorphisms": {},
+            }
+            for vertex in vertices
+        )
     failed_children = []
-    for v in vertices:
+    for orbit_record in orbit_records:
+        v = orbit_record["representative"]
         enforce_search_time_limit()
         search_stats.vertex_attempts += 1
         log_heartbeat("running")
@@ -1430,7 +1517,16 @@ def find_nonevasive_witness(
         ):
             search_stats.link_first_rejections += 1
             failed_children.append(
-                {"vertex": v, "branch": "link", "child": link_state_key}
+                failed_child_record(
+                    v,
+                    "link",
+                    link_state_key,
+                    orbit_record=(
+                        orbit_record
+                        if AUTOMORPHISM_ORBIT_PRUNING
+                        else None
+                    ),
+                )
             )
             continue
 
@@ -1452,11 +1548,16 @@ def find_nonevasive_witness(
             is_link_state=False,
         ):
             failed_children.append(
-                {
-                    "vertex": v,
-                    "branch": "deletion",
-                    "child": deletion_state_key,
-                }
+                failed_child_record(
+                    v,
+                    "deletion",
+                    deletion_state_key,
+                    orbit_record=(
+                        orbit_record
+                        if AUTOMORPHISM_ORBIT_PRUNING
+                        else None
+                    ),
+                )
             )
             continue
 
@@ -1581,14 +1682,33 @@ def serialize_certificate_state(state_key, record):
             }
         )
     else:
-        serialized["failed_children"] = [
-            {
+        serialized_failures = []
+        for failure in record["failed_children"]:
+            serialized_failure = {
                 "vertex": failure["vertex"],
                 "branch": failure["branch"],
                 "child": certificate_state_id(failure["child"]),
             }
-            for failure in record["failed_children"]
-        ]
+            if "orbit_members" in failure:
+                serialized_failure["orbit_members"] = list(
+                    failure["orbit_members"]
+                )
+                serialized_failure["orbit_automorphisms"] = [
+                    {
+                        "target_vertex": item["target_vertex"],
+                        "vertex_isomorphism": [
+                            {
+                                "source_vertex": source_vertex,
+                                "target_vertex": target_vertex,
+                            }
+                            for source_vertex, target_vertex
+                            in item["vertex_isomorphism"]
+                        ],
+                    }
+                    for item in failure["orbit_automorphisms"]
+                ]
+            serialized_failures.append(serialized_failure)
+        serialized["failed_children"] = serialized_failures
     return serialized
 
 
@@ -1601,7 +1721,7 @@ def build_certificate_document(
     ]
     return {
         "format": "simplicial_nonevasiveness_certificate",
-        "schema_version": int(3),
+        "schema_version": int(4),
         "certificate_kind": certificate_kind,
         "result": result,
         "root_state": certificate_state_id((int(0), int(0))),
@@ -1626,6 +1746,9 @@ def build_certificate_document(
             ),
             "isomorphism_cache_max_failures": int(
                 ISOMORPHISM_CACHE_MAX_FAILURES
+            ),
+            "automorphism_orbit_pruning": bool(
+                AUTOMORPHISM_ORBIT_PRUNING
             ),
             "search_state_limit": int(SEARCH_STATE_LIMIT),
             "search_time_limit_seconds": float(
@@ -1868,6 +1991,18 @@ print(
     flush=True,
 )
 print(
+    f"Automorphism orbit pruning: "
+    f"{search_stats.automorphism_orbit_computations:,} computations; "
+    f"{search_stats.automorphism_orbits:,} orbits; "
+    f"{search_stats.automorphism_vertices_pruned:,} vertex attempts pruned",
+    flush=True,
+)
+print(
+    f"Certificate orbit automorphisms: "
+    f"{search_stats.certificate_orbit_automorphisms:,}",
+    flush=True,
+)
+print(
     f"Terminal states classified: "
     f"{search_stats.terminal_states_classified:,}",
     flush=True,
@@ -1958,6 +2093,13 @@ print(
     f"{search_stats.isomorphism_cache_evictions}; "
     f"certificate_isomorphism_aliases="
     f"{search_stats.certificate_isomorphism_aliases}; "
+    f"automorphism_orbit_pruning={AUTOMORPHISM_ORBIT_PRUNING}; "
+    f"automorphism_orbit_computations="
+    f"{search_stats.automorphism_orbit_computations}; "
+    f"automorphism_vertices_pruned="
+    f"{search_stats.automorphism_vertices_pruned}; "
+    f"certificate_orbit_automorphisms="
+    f"{search_stats.certificate_orbit_automorphisms}; "
     f"state_engine={STATE_ENGINE}; "
     f"elapsed_seconds={elapsed:.6f}; "
     f"peak_rss_mib={peak_rss_mib:.3f}; "
