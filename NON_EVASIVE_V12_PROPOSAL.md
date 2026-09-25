@@ -363,8 +363,9 @@ Stage 5C validation performed:
 
 ### Stage 6: Improve branching and obstruction scheduling
 
-Status: in progress; Stage 6A child-aware branch ordering completed on
-2026-09-25. Adaptive obstruction scheduling remains planned as Stage 6B.
+Status: completed on 2026-09-25. Stage 6A added child-aware branch ordering;
+Stage 6B added adaptive obstruction scheduling and certified residual-state
+obstructions.
 
 - Classify both immediate children cheaply before entering deep recursion.
 - Prefer vertices whose links are already simplices, trees, cones, or other
@@ -431,6 +432,48 @@ state/time limits):
 
 The preserved local artifacts are stored under
 `outputs/benchmarks/rudins_stage6a_seed123456_20260925/`.
+
+Stage 6B validation performed:
+
+- Added a fixed or adaptive obstruction scheduler. Fixed mode remains the
+  default. Adaptive mode waits until each eligible test completes a configured
+  warmup, then orders tests by observed seconds per rejection. Every eligible
+  test still runs unless an earlier one has already certified rejection.
+- Profiled connectivity, Euler characteristic, the no-free-face theorem,
+  every configured finite-field homology screen, and integral homology by
+  calls, elapsed time, rejections, and time per rejection. Heartbeats, console
+  statistics, certificates, and the final machine-readable result expose the
+  relevant configuration and counters.
+- Generalized the GF(2) descendant screen to distinct configurable small prime
+  fields from 2 through 97. The default remains GF(2), and optional root field
+  screens remain disabled by default. Integral homology is still the final
+  root test whenever earlier one-sided screens do not reject.
+- Added an exact, opt-in no-free-face obstruction with independent vertex and
+  facet size gates. A non-simplex with no free face cannot begin an elementary
+  collapse; because every non-evasive complex is collapsible, this certifies a
+  negative terminal rather than treating heuristic failure as proof.
+- Independently taught the certificate verifier to validate arbitrary allowed
+  small-prime homology reasons and no-free-face non-collapsibility reasons.
+  The certificate schema remains version 4 because the proof record structure
+  did not change.
+- Exhaustively matched bitset free-face detection against an independent Sage
+  facet-set implementation on all 189 labeled complexes with at most four
+  vertices.
+- On Sage's eight-vertex Dunce Hat triangulation, both the old exhaustive path
+  and the new theorem returned independently verified `EVASIVE_CERTIFIED`
+  results. The no-free-face theorem reduced the reachable certificate from
+  nine states to one and avoided root integral homology.
+- On a nine-vertex triangulation of the Moore space with 3-torsion, GF(2)
+  reduced homology was trivial while GF(3) was nontrivial. The solver emitted
+  a one-state `nontrivial_homology_GF3` certificate, which the independent
+  verifier accepted without running integral homology.
+- Confirmed that size-gated fallback follows the previous exact path, invalid
+  scheduler and prime settings fail early, and the sequential non-overwriting
+  fixed-versus-adaptive benchmark verifies every conclusive certificate.
+
+Stage 6B remains opt-in for long searches (`OBSTRUCTION_SCHEDULER=fixed` and
+`NONCOLLAPSIBILITY_OBSTRUCTION=false` by default) until a representative
+bounded A/B run establishes the best settings for the unresolved complexes.
 
 ### Stage 7: Add checkpoint and resume support
 
@@ -509,3 +552,4 @@ correctness, certificates, and checkpointing.
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 5B: added opt-in canonical isomorphism memoization and schema-3 bijection proof edges. | Exhaustive keys matched brute force on 189 small complexes; Rudin's ball fell from 57 to 43 materializations; cache-on/off certificates verified; malformed maps were rejected. |
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 5C: added opt-in automorphism-orbit pruning and schema-4 orbit justifications. | Exhaustive orbits and 641 maps matched brute force; the suspension fixture fell from 24 to 16 materializations; corrupt orbit evidence was rejected. |
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 6A: added exact child preclassification, size-gated child-aware ordering, and a sequential branching benchmark. | Cheap classifications matched Sage on 189 complexes; Rudin's ball fell from 57 to 37 materializations; both engines and certificates matched; protected and fallback semantics passed. |
+| 2026-09-25 | `feature/nonevasive-v12` | Stage 6B: added profiled adaptive obstruction scheduling, configurable small-prime homology, and a certified no-free-face obstruction. | Free-face detection matched Sage on 189 complexes; the Dunce Hat certificate fell from nine states to one; GF(3) detected Moore-space torsion missed by GF(2); certificates and the A/B runner verified. |

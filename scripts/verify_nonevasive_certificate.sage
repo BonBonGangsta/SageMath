@@ -72,6 +72,33 @@ def is_tree_complex(K):
     return K.dimension() == 1 and K.graph().is_tree()
 
 
+def has_free_face(K):
+    """Return whether a codimension-one face has one maximal cofacet."""
+    facets = [frozenset(facet) for facet in K.facets()]
+    for facet in facets:
+        if len(facet) < 2:
+            continue
+        for vertex in facet:
+            ridge = facet - {vertex}
+            containing_facets = sum(
+                ridge.issubset(candidate) for candidate in facets
+            )
+            if containing_facets == 1:
+                return True
+    return False
+
+
+def is_small_prime(value):
+    if value < 2 or value > 97:
+        return False
+    divisor = 2
+    while divisor * divisor <= value:
+        if value % divisor == 0:
+            return False
+        divisor += 1
+    return True
+
+
 def parse_mask(value, field_name):
     if not isinstance(value, str):
         raise VerificationError(f"{field_name} must be a hexadecimal string")
@@ -144,10 +171,24 @@ def verify_failure_terminal(K, reason):
         valid = bool(K.vertices()) and not K.is_connected()
     elif reason == "euler_characteristic_not_one":
         valid = K.euler_characteristic() != 1
+    elif reason == "no_free_face_noncollapsible":
+        valid = (
+            bool(K.vertices())
+            and not is_simplex(K)
+            and not has_free_face(K)
+        )
     elif reason == "nontrivial_homology_ZZ":
         valid = has_nontrivial_reduced_homology(K, ZZ, "ZZ")
-    elif reason == "nontrivial_homology_GF2":
-        valid = has_nontrivial_reduced_homology(K, GF(2), "GF2")
+    elif reason.startswith("nontrivial_homology_GF"):
+        prime_text = reason.removeprefix("nontrivial_homology_GF")
+        if not prime_text.isdigit() or not is_small_prime(int(prime_text)):
+            raise VerificationError(
+                f"Invalid finite-field terminal reason: {reason}"
+            )
+        prime = int(prime_text)
+        valid = has_nontrivial_reduced_homology(
+            K, GF(prime), f"GF{prime}"
+        )
     else:
         raise VerificationError(f"Unknown negative terminal reason: {reason}")
     if not valid:

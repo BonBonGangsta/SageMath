@@ -9,6 +9,7 @@ the representation used by Sage for a complex with no vertices.
 """
 
 import operator
+import math
 
 
 def _as_integer(value, name):
@@ -80,6 +81,85 @@ def facet_complex_is_connected(facet_masks):
         if expanded == reached:
             return reached == present
         reached = expanded
+
+
+def facet_complex_has_free_face(facet_masks):
+    """Return whether a nonempty codimension-one free face exists.
+
+    The input is interpreted as the maximal facets of a finite simplicial
+    complex.  A ridge is free exactly when it is contained in one maximal
+    facet.  Looking only at ridges is sufficient: every lower-dimensional
+    free face is contained in a free ridge of its unique maximal facet.
+    """
+    normalized = normalize_facet_masks(facet_masks)
+    if not normalized:
+        return False
+
+    for facet_mask in normalized:
+        remaining = facet_mask
+        while remaining:
+            vertex_bit = remaining & -remaining
+            remaining ^= vertex_bit
+            ridge = facet_mask ^ vertex_bit
+            if ridge == 0:
+                continue
+
+            containing_facets = 0
+            for candidate in normalized:
+                if ridge & candidate == ridge:
+                    containing_facets += 1
+                    if containing_facets > 1:
+                        break
+            if containing_facets == 1:
+                return True
+    return False
+
+
+def order_obstruction_names(names, profiles, mode="fixed", warmup_calls=8):
+    """Order sound rejection tests using observed seconds per rejection.
+
+    ``profiles`` maps each name to a record containing ``calls``, ``seconds``,
+    and ``rejections``.  Adaptive mode retains the caller's order until every
+    eligible test has completed its warmup, then prefers the tests with the
+    lowest observed time per rejection.  A test with no rejection is retained
+    but placed after tests with measured yield.
+    """
+    ordered = tuple(names)
+    if mode not in {"fixed", "adaptive"}:
+        raise ValueError("mode must be fixed or adaptive")
+    warmup_calls = _as_nonnegative_int(warmup_calls, "warmup_calls")
+    if mode == "fixed" or len(ordered) < 2:
+        return ordered
+
+    profile_records = []
+    for index, name in enumerate(ordered):
+        profile = profiles.get(name, {})
+        calls = _as_nonnegative_int(profile.get("calls", 0), "calls")
+        rejections = _as_nonnegative_int(
+            profile.get("rejections", 0), "rejections"
+        )
+        seconds = float(profile.get("seconds", 0.0))
+        if not math.isfinite(seconds) or seconds < 0:
+            raise ValueError("seconds must be finite and nonnegative")
+        if rejections > calls:
+            raise ValueError("rejections cannot exceed calls")
+        profile_records.append(
+            (name, index, calls, seconds, rejections)
+        )
+
+    if any(record[2] < warmup_calls for record in profile_records):
+        return ordered
+
+    def adaptive_key(record):
+        _name, index, _calls, seconds, rejections = record
+        seconds_per_rejection = (
+            seconds / rejections if rejections else math.inf
+        )
+        return (seconds_per_rejection, index)
+
+    return tuple(
+        record[0] for record in sorted(profile_records, key=adaptive_key)
+    )
 
 
 def classify_facets_cheaply(facet_masks):

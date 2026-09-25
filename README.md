@@ -295,12 +295,78 @@ docker compose run --rm --entrypoint /bin/bash \
 
 The baseline and child-aware jobs run sequentially with identical settings.
 Timestamped output contains logs, `summary.tsv`, and independently verified
-certificates for any conclusive result. It is safe to run this comparison now;
-Stages 6B and later are not prerequisites.
+certificates for any conclusive result.
 
 Run the Stage 6A regression suite with:
 
 ```bash
 docker compose run --rm --entrypoint /bin/bash sagemath-runner \
   -c 'cd /workspace && bash tests/test_v12_stage6a.sh'
+```
+
+## Adaptive Obstruction Scheduling
+
+Stage 6B adds opt-in scheduling and two additional one-sided rejection tools:
+
+```bash
+OBSTRUCTION_SCHEDULER=adaptive
+OBSTRUCTION_ADAPTIVE_WARMUP_CALLS=8
+NONCOLLAPSIBILITY_OBSTRUCTION=true
+NONCOLLAPSIBILITY_MAX_VERTICES=80
+NONCOLLAPSIBILITY_MAX_FACETS=200
+HOMOLOGY_FIELD_PRIMES=2,3
+HOMOLOGY_FIELDS_ON_LINKS=true
+HOMOLOGY_FIELDS_AT_ROOT=false
+```
+
+The scheduler profiles connectivity, Euler characteristic, the no-free-face
+test, finite-field homology, and integral homology by calls, elapsed time, and
+rejections. After every eligible test has completed its warmup, adaptive mode
+prefers the lowest observed time per rejection. All eligible tests still run
+unless an earlier test has already proved rejection. Root tests retain their
+fixed conservative order.
+
+A non-simplex with no free face cannot begin an elementary collapse.
+Non-evasive complexes are collapsible, so this is a certified evasiveness
+obstruction rather than a failed collapse heuristic. It is disabled by
+default and size-gated because the exact ridge-containment test can be
+quadratic in the number of facets. Zero size limits mean unlimited.
+
+`HOMOLOGY_FIELD_PRIMES` accepts distinct comma-separated primes from 2 through
+97. The default remains `2`; adding `3` can detect odd torsion invisible over
+GF(2). Field screens at the root remain disabled by default, and integral
+homology remains the final root check when earlier screens do not reject.
+`OBSTRUCTION_SCHEDULER=fixed`,
+`NONCOLLAPSIBILITY_OBSTRUCTION=false`, and the other defaults preserve the
+pre-Stage-6B search behavior.
+
+The Dunce Hat regression is contractible but has no free face. The new
+obstruction reduced its verified evasiveness certificate from nine states to
+one. A Moore-space regression verifies that GF(3) rejects odd torsion after
+GF(2) reports trivial reduced homology.
+
+Run a sequential fixed-versus-adaptive comparison with identical search
+settings using:
+
+```bash
+docker compose run --rm --entrypoint /bin/bash \
+  -e BENCHMARK_STATE_LIMIT=50000 \
+  -e BENCHMARK_TIME_LIMIT_SECONDS=3600 \
+  -e RANDOM_SEED=123456 \
+  sagemath-runner -c '
+    cd /workspace
+    bash benchmarks/run_v12_obstruction_benchmark.sh \
+      path/to/facets.txt experiment_name
+  '
+```
+
+The runner enables the same no-free-face and GF(2)/GF(3) screens in both jobs;
+only the scheduler changes. It never overwrites an existing result directory
+and independently verifies every conclusive certificate.
+
+Run the Stage 6B regression suite with:
+
+```bash
+docker compose run --rm --entrypoint /bin/bash sagemath-runner \
+  -c 'cd /workspace && bash tests/test_v12_stage6b.sh'
 ```

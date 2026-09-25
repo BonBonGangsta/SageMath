@@ -23,7 +23,9 @@ from simplicial_bitset import (
     RootBitsetComplex,
     classify_facets_cheaply,
     delete_vertex_from_facets,
+    facet_complex_has_free_face,
     link_vertex_from_facets,
+    order_obstruction_names,
     vertices_mask,
 )
 from simplicial_isomorphism import (
@@ -232,11 +234,67 @@ CHILD_AWARE_ORDERING = get_boolean_environment_setting(
     "CHILD_AWARE_ORDERING", False
 )
 
+OBSTRUCTION_SCHEDULER = os.environ.get(
+    "OBSTRUCTION_SCHEDULER", "fixed"
+).strip().lower()
+VALID_OBSTRUCTION_SCHEDULERS = frozenset({"fixed", "adaptive"})
+if OBSTRUCTION_SCHEDULER not in VALID_OBSTRUCTION_SCHEDULERS:
+    raise ValueError(
+        "OBSTRUCTION_SCHEDULER must be one of: adaptive, fixed"
+    )
+OBSTRUCTION_ADAPTIVE_WARMUP_CALLS = int(
+    os.environ.get("OBSTRUCTION_ADAPTIVE_WARMUP_CALLS", "8")
+)
+NONCOLLAPSIBILITY_OBSTRUCTION = get_boolean_environment_setting(
+    "NONCOLLAPSIBILITY_OBSTRUCTION", False
+)
+NONCOLLAPSIBILITY_MAX_VERTICES = int(
+    os.environ.get("NONCOLLAPSIBILITY_MAX_VERTICES", "80")
+)
+NONCOLLAPSIBILITY_MAX_FACETS = int(
+    os.environ.get("NONCOLLAPSIBILITY_MAX_FACETS", "200")
+)
 
-# Adaptive homology policy. Integral homology is always used at the root
-# after the cheaper terminal tests. A descendant is considered small when it
-# meets either enabled ZZ threshold. Larger direct-link states and periodic
-# depth checkpoints receive the cheaper GF(2) rejection screen instead.
+
+def is_small_prime(value):
+    """Return whether ``value`` is prime within the supported small range."""
+    if value < 2 or value > 97:
+        return False
+    divisor = 2
+    while divisor * divisor <= value:
+        if value % divisor == 0:
+            return False
+        divisor += 1
+    return True
+
+
+def load_homology_field_primes(raw_value):
+    """Parse a comma-separated list of distinct primes at most 97."""
+    if raw_value is None:
+        raw_value = "2"
+    text = raw_value.strip()
+    if not text:
+        return tuple()
+    try:
+        primes = tuple(int(item.strip()) for item in text.split(","))
+    except ValueError as exc:
+        raise ValueError(
+            "HOMOLOGY_FIELD_PRIMES must be comma-separated integers"
+        ) from exc
+    if len(set(primes)) != len(primes):
+        raise ValueError("HOMOLOGY_FIELD_PRIMES cannot repeat a prime")
+    if any(not is_small_prime(prime) for prime in primes):
+        raise ValueError(
+            "HOMOLOGY_FIELD_PRIMES must contain primes between 2 and 97"
+        )
+    return primes
+
+
+# Homology eligibility policy. Integral homology is always used at the root
+# after cheaper terminal tests unless an optional field screen rejects first.
+# A descendant is considered small when it meets either enabled ZZ threshold.
+# Larger direct-link states and periodic depth checkpoints receive the
+# configured small-prime field screens instead.
 HOMOLOGY_ZZ_MAX_VERTICES = int(
     os.environ.get("HOMOLOGY_ZZ_MAX_VERTICES", "80")
 )
@@ -249,10 +307,24 @@ HOMOLOGY_START_DEPTH = int(
 HOMOLOGY_GF2_DEPTH_INTERVAL = int(
     os.environ.get("HOMOLOGY_GF2_DEPTH_INTERVAL", "20")
 )
-HOMOLOGY_GF2_ON_LINKS = get_boolean_environment_setting(
-    "HOMOLOGY_GF2_ON_LINKS", True
+if "HOMOLOGY_FIELDS_ON_LINKS" in os.environ:
+    HOMOLOGY_FIELDS_ON_LINKS = get_boolean_environment_setting(
+        "HOMOLOGY_FIELDS_ON_LINKS", True
+    )
+else:
+    # Backward-compatible alias retained for existing v12 deployments.
+    HOMOLOGY_FIELDS_ON_LINKS = get_boolean_environment_setting(
+        "HOMOLOGY_GF2_ON_LINKS", True
+    )
+HOMOLOGY_FIELD_PRIMES = load_homology_field_primes(
+    os.environ.get("HOMOLOGY_FIELD_PRIMES")
 )
-GF2 = GF(2)
+HOMOLOGY_FIELDS_AT_ROOT = get_boolean_environment_setting(
+    "HOMOLOGY_FIELDS_AT_ROOT", False
+)
+HOMOLOGY_FIELD_RINGS = {
+    prime: GF(prime) for prime in HOMOLOGY_FIELD_PRIMES
+}
 
 if HEARTBEAT_INTERVAL_SECONDS <= 0:
     raise ValueError("HEARTBEAT_INTERVAL_SECONDS must be positive")
@@ -271,6 +343,17 @@ if CHILD_AWARE_MAX_VERTICES < 0:
 
 if CHILD_AWARE_MAX_FACETS < 0:
     raise ValueError("CHILD_AWARE_MAX_FACETS cannot be negative")
+
+if OBSTRUCTION_ADAPTIVE_WARMUP_CALLS < 0:
+    raise ValueError(
+        "OBSTRUCTION_ADAPTIVE_WARMUP_CALLS cannot be negative"
+    )
+
+if NONCOLLAPSIBILITY_MAX_VERTICES < 0:
+    raise ValueError("NONCOLLAPSIBILITY_MAX_VERTICES cannot be negative")
+
+if NONCOLLAPSIBILITY_MAX_FACETS < 0:
+    raise ValueError("NONCOLLAPSIBILITY_MAX_FACETS cannot be negative")
 
 if HOMOLOGY_ZZ_MAX_VERTICES < 0:
     raise ValueError("HOMOLOGY_ZZ_MAX_VERTICES cannot be negative")
@@ -393,7 +476,35 @@ class SearchStats:
         self.homology_zz_rejections = 0
         self.homology_gf2_rejections = 0
         self.homology_skipped = 0
+        self.homology_field_profiles = OrderedDict()
+        self.obstruction_profiles = OrderedDict()
+        self.obstruction_schedules = 0
+        self.obstruction_reorders = 0
+        self.noncollapsibility_states_eligible = 0
+        self.noncollapsibility_states_skipped = 0
         self.restricted_vertices_skipped = 0
+
+    def record_obstruction(self, name, elapsed_seconds, rejected):
+        profile = self.obstruction_profiles.setdefault(
+            name,
+            {"calls": 0, "seconds": 0.0, "rejections": 0},
+        )
+        profile["calls"] += 1
+        profile["seconds"] += float(elapsed_seconds)
+        if rejected:
+            profile["rejections"] += 1
+
+    def record_field_homology(
+        self, prime, elapsed_seconds, rejected
+    ):
+        profile = self.homology_field_profiles.setdefault(
+            int(prime),
+            {"calls": 0, "seconds": 0.0, "rejections": 0},
+        )
+        profile["calls"] += 1
+        profile["seconds"] += float(elapsed_seconds)
+        if rejected:
+            profile["rejections"] += 1
 
     def update_cache_sizes(self, success_entries, failure_entries):
         self.cache_success_entries = int(success_entries)
@@ -962,6 +1073,47 @@ def log_heartbeat(
         "child_aware_states_reordered": int(
             search_stats.child_aware_states_reordered
         ),
+        "obstruction_scheduler": OBSTRUCTION_SCHEDULER,
+        "obstruction_adaptive_warmup_calls": int(
+            OBSTRUCTION_ADAPTIVE_WARMUP_CALLS
+        ),
+        "obstruction_schedules": int(
+            search_stats.obstruction_schedules
+        ),
+        "obstruction_reorders": int(search_stats.obstruction_reorders),
+        "obstruction_profiles": {
+            name: {
+                "calls": int(profile["calls"]),
+                "seconds": float(round(profile["seconds"], int(6))),
+                "rejections": int(profile["rejections"]),
+                "seconds_per_rejection": (
+                    None
+                    if not profile["rejections"]
+                    else float(
+                        round(
+                            profile["seconds"] / profile["rejections"],
+                            int(6),
+                        )
+                    )
+                ),
+            }
+            for name, profile in search_stats.obstruction_profiles.items()
+        },
+        "noncollapsibility_obstruction": bool(
+            NONCOLLAPSIBILITY_OBSTRUCTION
+        ),
+        "noncollapsibility_max_vertices": int(
+            NONCOLLAPSIBILITY_MAX_VERTICES
+        ),
+        "noncollapsibility_max_facets": int(
+            NONCOLLAPSIBILITY_MAX_FACETS
+        ),
+        "noncollapsibility_states_eligible": int(
+            search_stats.noncollapsibility_states_eligible
+        ),
+        "noncollapsibility_states_skipped": int(
+            search_stats.noncollapsibility_states_skipped
+        ),
         # "paths_completed" is retained as the user-facing short name. More
         # precisely, it counts terminal cache-miss classifications. A state
         # can be counted again if it was evicted and later revisited.
@@ -984,14 +1136,25 @@ def log_heartbeat(
         "bitset_state_reconstructions": int(
             search_stats.bitset_state_reconstructions
         ),
-        "homology_policy": "adaptive_zz_gf2",
+        "homology_policy": "scheduled_zz_small_fields",
         "homology_start_depth": int(HOMOLOGY_START_DEPTH),
         "homology_zz_max_vertices": int(HOMOLOGY_ZZ_MAX_VERTICES),
         "homology_zz_max_faces": int(HOMOLOGY_ZZ_MAX_FACES),
         "homology_gf2_depth_interval": int(
             HOMOLOGY_GF2_DEPTH_INTERVAL
         ),
-        "homology_gf2_on_links": bool(HOMOLOGY_GF2_ON_LINKS),
+        "homology_fields_on_links": bool(HOMOLOGY_FIELDS_ON_LINKS),
+        "homology_gf2_on_links": bool(HOMOLOGY_FIELDS_ON_LINKS),
+        "homology_field_primes": list(HOMOLOGY_FIELD_PRIMES),
+        "homology_fields_at_root": bool(HOMOLOGY_FIELDS_AT_ROOT),
+        "homology_field_profiles": {
+            str(prime): {
+                "calls": int(profile["calls"]),
+                "seconds": float(round(profile["seconds"], int(6))),
+                "rejections": int(profile["rejections"]),
+            }
+            for prime, profile in search_stats.homology_field_profiles.items()
+        },
         "homology_zz_calls": int(search_stats.homology_zz_calls),
         "homology_gf2_calls": int(search_stats.homology_gf2_calls),
         "homology_zz_seconds": float(
@@ -1232,6 +1395,7 @@ def order_vertices_by_child_preclassification(
         search_stats.child_aware_states_reordered += 1
     return (ordered_vertices, previews)
 
+
 def homology_group_is_trivial(group, ring_name):
     """Handle Sage's different ZZ-group and field-vector-space results."""
     if ring_name == "ZZ":
@@ -1243,10 +1407,13 @@ def has_trivial_reduced_homology(
     K, base_ring, ring_name, depth=None
 ):
     """Run and time one sound homology rejection test."""
+    field_prime = None
     if ring_name == "ZZ":
         search_stats.homology_zz_calls += 1
     else:
-        search_stats.homology_gf2_calls += 1
+        field_prime = int(ring_name.removeprefix("GF"))
+        if field_prime == 2:
+            search_stats.homology_gf2_calls += 1
 
     # Emit explicit root-homology boundaries. If the operating system kills
     # the process during this relatively expensive step, the final log line
@@ -1264,7 +1431,7 @@ def has_trivial_reduced_homology(
         elapsed = time.perf_counter() - started_at
         if ring_name == "ZZ":
             search_stats.homology_zz_seconds += elapsed
-        else:
+        elif field_prime == 2:
             search_stats.homology_gf2_seconds += elapsed
         if is_root_test:
             search_stats.phase = previous_phase
@@ -1277,22 +1444,37 @@ def has_trivial_reduced_homology(
     if not is_trivial:
         if ring_name == "ZZ":
             search_stats.homology_zz_rejections += 1
-        else:
+        elif field_prime == 2:
             search_stats.homology_gf2_rejections += 1
+    if field_prime is not None:
+        search_stats.record_field_homology(
+            field_prime, elapsed, not is_trivial
+        )
     return is_trivial
 
 
-def homology_test_for_state(K, depth, is_link_state):
-    """Choose ZZ, GF(2), or no homology test for this cache miss."""
+def configured_field_homology_tests():
+    return tuple(
+        (HOMOLOGY_FIELD_RINGS[prime], f"GF{prime}")
+        for prime in HOMOLOGY_FIELD_PRIMES
+    )
+
+
+def homology_tests_for_state(K, depth, is_link_state):
+    """Choose the sound homology screens for this cache miss."""
 
     # Keep the one-time integral root check.
     if depth == 0:
-        return (ZZ, "ZZ")
+        tests = []
+        if HOMOLOGY_FIELDS_AT_ROOT:
+            tests.extend(configured_field_homology_tests())
+        tests.append((ZZ, "ZZ"))
+        return tuple(tests)
 
     # Do not run descendant homology before the configured depth.
     # This also gates direct-link homology.
     if depth < HOMOLOGY_START_DEPTH:
-        return None
+        return tuple()
 
     vertex_count = len(K.vertices())
 
@@ -1301,7 +1483,7 @@ def homology_test_for_state(K, depth, is_link_state):
         HOMOLOGY_ZZ_MAX_VERTICES > 0
         and vertex_count <= HOMOLOGY_ZZ_MAX_VERTICES
     ):
-        return (ZZ, "ZZ")
+        return ((ZZ, "ZZ"),)
 
     if HOMOLOGY_ZZ_MAX_FACES > 0:
         # f_vector()[0] is the empty face.
@@ -1309,7 +1491,7 @@ def homology_test_for_state(K, depth, is_link_state):
             int(n) for n in K.f_vector()[1:]
         )
         if nonempty_face_count <= HOMOLOGY_ZZ_MAX_FACES:
-            return (ZZ, "ZZ")
+            return ((ZZ, "ZZ"),)
 
     # With start=200 and interval=20, checkpoints are
     # 200, 220, 240, ...
@@ -1320,10 +1502,11 @@ def homology_test_for_state(K, depth, is_link_state):
         ) % HOMOLOGY_GF2_DEPTH_INTERVAL == 0
     )
 
-    if (HOMOLOGY_GF2_ON_LINKS and is_link_state) or is_checkpoint:
-        return (GF2, "GF2")
+    if (HOMOLOGY_FIELDS_ON_LINKS and is_link_state) or is_checkpoint:
+        return configured_field_homology_tests()
 
-    return None
+    return tuple()
+
 
 def materialize_search_state(
     root_K, root_bitset, state_key, normalized_facets=None
@@ -1397,7 +1580,60 @@ def enforce_search_state_limit_before_miss():
             int(search_stats.subcomplexes_examined),
         )
 
-def classify_nonevasive_state(K, depth=0, is_link_state=False):
+
+def noncollapsibility_obstruction_is_eligible(K, facet_masks):
+    """Apply configured size gates to the exact no-free-face test."""
+    if not NONCOLLAPSIBILITY_OBSTRUCTION:
+        return False
+    if (
+        NONCOLLAPSIBILITY_MAX_VERTICES > 0
+        and len(K.vertices()) > NONCOLLAPSIBILITY_MAX_VERTICES
+    ):
+        search_stats.noncollapsibility_states_skipped += 1
+        return False
+    facet_count = (
+        len(facet_masks) if facet_masks is not None else len(K.facets())
+    )
+    if (
+        NONCOLLAPSIBILITY_MAX_FACETS > 0
+        and facet_count > NONCOLLAPSIBILITY_MAX_FACETS
+    ):
+        search_stats.noncollapsibility_states_skipped += 1
+        return False
+    search_stats.noncollapsibility_states_eligible += 1
+    return True
+
+
+def facet_masks_from_sage_complex(K):
+    """Encode a standalone Sage complex for the free-face predicate."""
+    vertex_bits = {
+        vertex: int(1) << index
+        for index, vertex in enumerate(K.vertices())
+    }
+    return tuple(
+        sum(vertex_bits[vertex] for vertex in facet)
+        for facet in K.facets()
+    )
+
+
+def run_profiled_obstruction(name, callback):
+    """Run one sound negative test and record cost and rejection yield."""
+    started_at = time.perf_counter()
+    reason = None
+    try:
+        reason = callback()
+        return reason
+    finally:
+        search_stats.record_obstruction(
+            name,
+            time.perf_counter() - started_at,
+            reason is not None,
+        )
+
+
+def classify_nonevasive_state(
+    K, depth=0, is_link_state=False, facet_masks=None
+):
     """Return ``(verdict, reason)``; verdict is None when search is needed."""
     # Sage's empty complex has dimension -1 and one empty facet. It is not a
     # base case for non-evasiveness here, and several Sage predicates treat it
@@ -1420,27 +1656,76 @@ def classify_nonevasive_state(K, depth=0, is_link_state=False):
             return (True, "tree")
         return (False, "one_dimensional_not_tree")
 
-    # Non-evasive complexes are contractible. Apply increasingly expensive
-    # necessary conditions before starting any recursive branching.
-    if not K.is_connected():
-        return (False, "disconnected")
+    # Non-evasive complexes are collapsible and therefore contractible. Every
+    # test below is a one-sided rejection theorem. Adaptive mode changes only
+    # their order, never their meaning or whether an eligible test is run.
+    tests = [
+        (
+            "connectivity",
+            lambda: None if K.is_connected() else "disconnected",
+        ),
+        (
+            "euler_characteristic",
+            lambda: (
+                None
+                if K.euler_characteristic() == 1
+                else "euler_characteristic_not_one"
+            ),
+        ),
+    ]
 
-    if K.euler_characteristic() != 1:
-        return (False, "euler_characteristic_not_one")
+    if noncollapsibility_obstruction_is_eligible(K, facet_masks):
+        if facet_masks is None:
+            facet_masks = facet_masks_from_sage_complex(K)
+        tests.append(
+            (
+                "no_free_face",
+                lambda: (
+                    None
+                    if facet_complex_has_free_face(facet_masks)
+                    else "no_free_face_noncollapsible"
+                ),
+            )
+        )
 
-    # The time limit is cooperative: check immediately before a potentially
-    # expensive homology call. A single Sage operation already in progress is
-    # not forcibly interrupted.
-    enforce_search_time_limit()
-    homology_test = homology_test_for_state(K, depth, is_link_state)
-    if homology_test is None:
+    homology_tests = homology_tests_for_state(K, depth, is_link_state)
+    if not homology_tests:
         search_stats.homology_skipped += 1
-    else:
-        base_ring, ring_name = homology_test
-        if not has_trivial_reduced_homology(
-            K, base_ring, ring_name, depth=depth
-        ):
-            return (False, f"nontrivial_homology_{ring_name}")
+    for base_ring, ring_name in homology_tests:
+        tests.append(
+            (
+                f"homology_{ring_name}",
+                lambda base_ring=base_ring, ring_name=ring_name: (
+                    None
+                    if has_trivial_reduced_homology(
+                        K, base_ring, ring_name, depth=depth
+                    )
+                    else f"nontrivial_homology_{ring_name}"
+                ),
+            )
+        )
+
+    fixed_names = tuple(name for name, _callback in tests)
+    scheduled_names = order_obstruction_names(
+        fixed_names,
+        search_stats.obstruction_profiles,
+        mode=("fixed" if depth == 0 else OBSTRUCTION_SCHEDULER),
+        warmup_calls=OBSTRUCTION_ADAPTIVE_WARMUP_CALLS,
+    )
+    search_stats.obstruction_schedules += 1
+    if scheduled_names != fixed_names:
+        search_stats.obstruction_reorders += 1
+    tests_by_name = dict(tests)
+
+    for name in scheduled_names:
+        # The time limit is cooperative: check immediately before each test.
+        # A Sage operation already in progress is not forcibly interrupted.
+        enforce_search_time_limit()
+        rejection_reason = run_profiled_obstruction(
+            name, tests_by_name[name]
+        )
+        if rejection_reason is not None:
+            return (False, rejection_reason)
 
     return (None, None)
 
@@ -1521,6 +1806,7 @@ def find_nonevasive_witness(
             or ISOMORPHISM_COMPLEX_CACHE
             or AUTOMORPHISM_ORBIT_PRUNING
             or CHILD_AWARE_ORDERING
+            or NONCOLLAPSIBILITY_OBSTRUCTION
             or STATE_ENGINE == "bitset"
         )
     ):
@@ -1593,7 +1879,10 @@ def find_nonevasive_witness(
     )
     enforce_search_time_limit()
     terminal_result, terminal_reason = classify_nonevasive_state(
-        K, depth=depth, is_link_state=is_link_state
+        K,
+        depth=depth,
+        is_link_state=is_link_state,
+        facet_masks=normalized_facets,
     )
     if terminal_result is not None:
         # This is a leaf of the uncached search tree: a theorem/base success
@@ -1943,6 +2232,30 @@ def build_certificate_document(
                 CHILD_AWARE_MAX_VERTICES
             ),
             "child_aware_max_facets": int(CHILD_AWARE_MAX_FACETS),
+            "obstruction_scheduler": OBSTRUCTION_SCHEDULER,
+            "obstruction_adaptive_warmup_calls": int(
+                OBSTRUCTION_ADAPTIVE_WARMUP_CALLS
+            ),
+            "noncollapsibility_obstruction": bool(
+                NONCOLLAPSIBILITY_OBSTRUCTION
+            ),
+            "noncollapsibility_max_vertices": int(
+                NONCOLLAPSIBILITY_MAX_VERTICES
+            ),
+            "noncollapsibility_max_facets": int(
+                NONCOLLAPSIBILITY_MAX_FACETS
+            ),
+            "homology_field_primes": list(HOMOLOGY_FIELD_PRIMES),
+            "homology_fields_at_root": bool(HOMOLOGY_FIELDS_AT_ROOT),
+            "homology_fields_on_links": bool(HOMOLOGY_FIELDS_ON_LINKS),
+            "homology_start_depth": int(HOMOLOGY_START_DEPTH),
+            "homology_zz_max_vertices": int(
+                HOMOLOGY_ZZ_MAX_VERTICES
+            ),
+            "homology_zz_max_faces": int(HOMOLOGY_ZZ_MAX_FACES),
+            "homology_field_depth_interval": int(
+                HOMOLOGY_GF2_DEPTH_INTERVAL
+            ),
             "search_state_limit": int(SEARCH_STATE_LIMIT),
             "search_time_limit_seconds": float(
                 SEARCH_TIME_LIMIT_SECONDS
@@ -2210,6 +2523,31 @@ print(
     flush=True,
 )
 print(
+    f"Obstruction scheduler: {OBSTRUCTION_SCHEDULER}; "
+    f"{search_stats.obstruction_schedules:,} schedules; "
+    f"{search_stats.obstruction_reorders:,} reordered",
+    flush=True,
+)
+for name, profile in search_stats.obstruction_profiles.items():
+    seconds_per_rejection = (
+        "n/a"
+        if not profile["rejections"]
+        else f"{profile['seconds'] / profile['rejections']:.6f}s"
+    )
+    print(
+        f"Obstruction {name}: {profile['calls']:,} calls, "
+        f"{profile['rejections']:,} rejections, "
+        f"{profile['seconds']:.6f} seconds, "
+        f"{seconds_per_rejection} per rejection",
+        flush=True,
+    )
+print(
+    f"No-free-face obstruction: "
+    f"{search_stats.noncollapsibility_states_eligible:,} eligible; "
+    f"{search_stats.noncollapsibility_states_skipped:,} size-gated",
+    flush=True,
+)
+print(
     f"Terminal states classified: "
     f"{search_stats.terminal_states_classified:,}",
     flush=True,
@@ -2266,6 +2604,15 @@ print(
     f"{search_stats.homology_gf2_seconds:,.3f} seconds",
     flush=True,
 )
+for prime, profile in search_stats.homology_field_profiles.items():
+    if prime == 2:
+        continue
+    print(
+        f"Homology GF({prime}): {profile['calls']:,} calls, "
+        f"{profile['rejections']:,} rejections, "
+        f"{profile['seconds']:.3f} seconds",
+        flush=True,
+    )
 print(
     f"Homology skipped at eligible nonterminal states: "
     f"{search_stats.homology_skipped:,}",
@@ -2282,6 +2629,17 @@ if current_rss_mib is not None:
 end_time = time.time()
 elapsed = end_time - start_time
 pretty_time = str(timedelta(seconds=int(elapsed)))
+noncollapsibility_rejections = search_stats.obstruction_profiles.get(
+    "no_free_face", {}
+).get("rejections", 0)
+homology_field_calls_summary = ",".join(
+    str(prime) + ":" + str(profile["calls"])
+    for prime, profile in search_stats.homology_field_profiles.items()
+)
+homology_field_rejections_summary = ",".join(
+    str(prime) + ":" + str(profile["rejections"])
+    for prime, profile in search_stats.homology_field_profiles.items()
+)
 print(
     f"FINAL_RESULT: {final_result}; "
     f"vertex_attempts={search_stats.vertex_attempts}; "
@@ -2317,6 +2675,13 @@ print(
     f"{search_stats.child_aware_states_reordered}; "
     f"child_preclassifications="
     f"{search_stats.child_preclassifications}; "
+    f"obstruction_scheduler={OBSTRUCTION_SCHEDULER}; "
+    f"obstruction_schedules={search_stats.obstruction_schedules}; "
+    f"obstruction_reorders={search_stats.obstruction_reorders}; "
+    f"noncollapsibility_obstruction="
+    f"{NONCOLLAPSIBILITY_OBSTRUCTION}; "
+    f"noncollapsibility_rejections="
+    f"{noncollapsibility_rejections}; "
     f"state_engine={STATE_ENGINE}; "
     f"elapsed_seconds={elapsed:.6f}; "
     f"peak_rss_mib={peak_rss_mib:.3f}; "
@@ -2333,7 +2698,11 @@ print(
     f"restricted_vertices_skipped="
     f"{search_stats.restricted_vertices_skipped}; "
     f"homology_zz_calls={search_stats.homology_zz_calls}; "
-    f"homology_gf2_calls={search_stats.homology_gf2_calls}",
+    f"homology_gf2_calls={search_stats.homology_gf2_calls}; "
+    f"homology_field_primes="
+    f"{','.join(str(prime) for prime in HOMOLOGY_FIELD_PRIMES)}; "
+    f"homology_field_calls={homology_field_calls_summary}; "
+    f"homology_field_rejections={homology_field_rejections_summary}",
     flush=True,
 )
 print(pretty_time, flush=True)
