@@ -15,6 +15,7 @@ trap 'rm -rf "${TEST_OUTPUT_DIR}"' EXIT
 SOLVER="${TEST_OUTPUT_DIR}/knot_nonevasive_v12.sage"
 cp "${PROJECT_DIR}/scripts/knot_nonevasive_v12.sage" "${SOLVER}"
 cp "${PROJECT_DIR}/scripts/simplicial_bitset.py" "${TEST_OUTPUT_DIR}/"
+cp "${PROJECT_DIR}/scripts/simplicial_isomorphism.py" "${TEST_OUTPUT_DIR}/"
 FACETS="${PROJECT_DIR}/tests/data/protected_policy_example.txt"
 
 run_limited_case() {

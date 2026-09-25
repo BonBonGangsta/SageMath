@@ -76,6 +76,8 @@ docker compose run --rm \
   -e WITNESS_CACHE_MAX_FAILURES="${WITNESS_CACHE_MAX_FAILURES:-500000}" \
   -e NORMALIZED_COMPLEX_CACHE="${NORMALIZED_COMPLEX_CACHE:-true}" \
   -e NORMALIZED_CACHE_MAX_FAILURES="${NORMALIZED_CACHE_MAX_FAILURES:-100000}" \
+  -e ISOMORPHISM_COMPLEX_CACHE="${ISOMORPHISM_COMPLEX_CACHE:-false}" \
+  -e ISOMORPHISM_CACHE_MAX_FAILURES="${ISOMORPHISM_CACHE_MAX_FAILURES:-100000}" \
   -e STATE_ENGINE="${STATE_ENGINE:-bitset}" \
   -e SEARCH_STATE_LIMIT="${SEARCH_STATE_LIMIT:-0}" \
   -e SEARCH_TIME_LIMIT_SECONDS="${SEARCH_TIME_LIMIT_SECONDS:-0}" \
@@ -91,9 +93,11 @@ docker compose run --rm \
     tmp_file=\$(mktemp /tmp/sage-script-XXXXXX.sage)
     cp '${RELATIVE_SCRIPT_PATH}' \"\$tmp_file\"
     cp scripts/simplicial_bitset.py /tmp/simplicial_bitset.py
+    cp scripts/simplicial_isomorphism.py /tmp/simplicial_isomorphism.py
     sage \"\$tmp_file\"
     rm -f \"\$tmp_file\"
     rm -f /tmp/simplicial_bitset.py
+    rm -f /tmp/simplicial_isomorphism.py
   " > "${LOG_FILE}" 2>&1 || RUN_EXIT=$?
 
 

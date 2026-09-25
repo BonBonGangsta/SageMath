@@ -16,6 +16,7 @@ SOLVER="${TEST_OUTPUT_DIR}/knot_nonevasive_v12.sage"
 VERIFIER="${TEST_OUTPUT_DIR}/verify_nonevasive_certificate.sage"
 cp "${PROJECT_DIR}/scripts/knot_nonevasive_v12.sage" "${SOLVER}"
 cp "${PROJECT_DIR}/scripts/simplicial_bitset.py" "${TEST_OUTPUT_DIR}/"
+cp "${PROJECT_DIR}/scripts/simplicial_isomorphism.py" "${TEST_OUTPUT_DIR}/"
 cp "${PROJECT_DIR}/scripts/verify_nonevasive_certificate.sage" "${VERIFIER}"
 
 run_case() {

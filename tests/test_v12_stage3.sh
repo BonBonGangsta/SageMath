@@ -19,6 +19,7 @@ LEGACY_TREE="${TEST_OUTPUT_DIR}/legacy_tree.csv"
 LOG_FILE="${TEST_OUTPUT_DIR}/solver.log"
 cp "${PROJECT_DIR}/scripts/knot_nonevasive_v12.sage" "${SOLVER}"
 cp "${PROJECT_DIR}/scripts/simplicial_bitset.py" "${TEST_OUTPUT_DIR}/"
+cp "${PROJECT_DIR}/scripts/simplicial_isomorphism.py" "${TEST_OUTPUT_DIR}/"
 cp "${PROJECT_DIR}/scripts/verify_nonevasive_certificate.sage" "${VERIFIER}"
 
 FACETS_FILE="${PROJECT_DIR}/knots/rudins_ball.txt" \

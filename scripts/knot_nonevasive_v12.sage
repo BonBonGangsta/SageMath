@@ -20,6 +20,11 @@ if str(SCRIPT_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIRECTORY))
 
 from simplicial_bitset import RootBitsetComplex
+from simplicial_isomorphism import (
+    canonical_incidence_key,
+    canonical_map_inverse,
+    vertex_isomorphism,
+)
 
 # Seed
 seed_env = os.environ.get("RANDOM_SEED")
@@ -145,6 +150,9 @@ WITNESS_CACHE_MAX_FAILURES = int(
 NORMALIZED_CACHE_MAX_FAILURES = int(
     os.environ.get("NORMALIZED_CACHE_MAX_FAILURES", "100000")
 )
+ISOMORPHISM_CACHE_MAX_FAILURES = int(
+    os.environ.get("ISOMORPHISM_CACHE_MAX_FAILURES", "100000")
+)
 STATE_ENGINE = os.environ.get("STATE_ENGINE", "bitset").strip().lower()
 VALID_STATE_ENGINES = frozenset({"bitset", "sage_reference"})
 if STATE_ENGINE not in VALID_STATE_ENGINES:
@@ -182,6 +190,9 @@ def get_boolean_environment_setting(name, default):
 NORMALIZED_COMPLEX_CACHE = get_boolean_environment_setting(
     "NORMALIZED_COMPLEX_CACHE", True
 )
+ISOMORPHISM_COMPLEX_CACHE = get_boolean_environment_setting(
+    "ISOMORPHISM_COMPLEX_CACHE", False
+)
 
 
 # Adaptive homology policy. Integral homology is always used at the root
@@ -213,6 +224,9 @@ if WITNESS_CACHE_MAX_FAILURES < 0:
 
 if NORMALIZED_CACHE_MAX_FAILURES < 0:
     raise ValueError("NORMALIZED_CACHE_MAX_FAILURES cannot be negative")
+
+if ISOMORPHISM_CACHE_MAX_FAILURES < 0:
+    raise ValueError("ISOMORPHISM_CACHE_MAX_FAILURES cannot be negative")
 
 if HOMOLOGY_ZZ_MAX_VERTICES < 0:
     raise ValueError("HOMOLOGY_ZZ_MAX_VERTICES cannot be negative")
@@ -299,6 +313,14 @@ class SearchStats:
         self.normalized_cache_evictions = 0
         self.normalized_key_computations = 0
         self.certificate_equivalence_aliases = 0
+        self.isomorphism_cache_hits = 0
+        self.isomorphism_cache_entries = 0
+        self.isomorphism_cache_peak_entries = 0
+        self.isomorphism_cache_success_entries = 0
+        self.isomorphism_cache_failure_entries = 0
+        self.isomorphism_cache_evictions = 0
+        self.isomorphism_key_computations = 0
+        self.certificate_isomorphism_aliases = 0
         self.terminal_states_classified = 0
         self.deepest_path = 0
         self.link_recursive_calls = 0
@@ -337,6 +359,19 @@ class SearchStats:
         self.normalized_cache_peak_entries = max(
             self.normalized_cache_peak_entries,
             self.normalized_cache_entries,
+        )
+
+    def update_isomorphism_cache_sizes(
+        self, success_entries, failure_entries
+    ):
+        self.isomorphism_cache_success_entries = int(success_entries)
+        self.isomorphism_cache_failure_entries = int(failure_entries)
+        self.isomorphism_cache_entries = int(
+            success_entries + failure_entries
+        )
+        self.isomorphism_cache_peak_entries = max(
+            self.isomorphism_cache_peak_entries,
+            self.isomorphism_cache_entries,
         )
 
 search_stats = SearchStats()
@@ -442,6 +477,111 @@ class NormalizedComplexCache:
                 search_stats.normalized_cache_evictions += 1
         self._update_stats()
 
+
+class IsomorphismComplexCache:
+    """Share verdicts across isomorphic vertex-facet incidence graphs."""
+
+    def __init__(self, max_failures=ISOMORPHISM_CACHE_MAX_FAILURES):
+        self.max_failures = int(max_failures)
+        if self.max_failures < 0:
+            raise ValueError("max_failures cannot be negative")
+        self._successes = {}
+        self._failures = OrderedDict()
+        self._update_stats()
+
+    def _update_stats(self):
+        search_stats.update_isomorphism_cache_sizes(
+            len(self._successes), len(self._failures)
+        )
+
+    @staticmethod
+    def _make_hit(
+        verdict,
+        winning_vertex,
+        representative_state,
+        representative_canonical_to_label,
+        current_label_to_canonical,
+    ):
+        isomorphism = vertex_isomorphism(
+            current_label_to_canonical,
+            representative_canonical_to_label,
+        )
+        if winning_vertex is _NO_WINNING_VERTEX:
+            current_winning_vertex = _NO_WINNING_VERTEX
+        else:
+            representative_to_current = {
+                target: source for source, target in isomorphism
+            }
+            current_winning_vertex = representative_to_current[
+                winning_vertex
+            ]
+        return (
+            verdict,
+            current_winning_vertex,
+            representative_state,
+            isomorphism,
+        )
+
+    def lookup(self, canonical_key, current_label_to_canonical):
+        success = self._successes.get(canonical_key, _CACHE_MISS)
+        if success is not _CACHE_MISS:
+            (
+                representative_state,
+                winning_vertex,
+                representative_canonical_to_label,
+            ) = success
+            return self._make_hit(
+                True,
+                winning_vertex,
+                representative_state,
+                representative_canonical_to_label,
+                current_label_to_canonical,
+            )
+
+        if canonical_key in self._failures:
+            (
+                representative_state,
+                representative_canonical_to_label,
+            ) = self._failures[canonical_key]
+            self._failures.move_to_end(canonical_key)
+            return self._make_hit(
+                False,
+                _NO_WINNING_VERTEX,
+                representative_state,
+                representative_canonical_to_label,
+                current_label_to_canonical,
+            )
+
+        return _CACHE_MISS
+
+    def store(
+        self,
+        canonical_key,
+        label_to_canonical,
+        state_key,
+        verdict,
+        winning_vertex,
+    ):
+        canonical_to_label = canonical_map_inverse(label_to_canonical)
+        if verdict:
+            self._failures.pop(canonical_key, None)
+            self._successes[canonical_key] = (
+                state_key,
+                winning_vertex,
+                canonical_to_label,
+            )
+        elif self.max_failures:
+            self._failures[canonical_key] = (
+                state_key,
+                canonical_to_label,
+            )
+            self._failures.move_to_end(canonical_key)
+            if len(self._failures) > self.max_failures:
+                self._failures.popitem(last=False)
+                search_stats.isomorphism_cache_evictions += 1
+        self._update_stats()
+
+
 class CertificateStore:
     """Retain proof records independently of cache eviction policy."""
 
@@ -459,6 +599,8 @@ class CertificateStore:
             replaces_or_retains_alias = (
                 "equivalent_state" in existing
                 or "equivalent_state" in record
+                or "isomorphic_state" in existing
+                or "isomorphic_state" in record
             )
             if same_verdict and replaces_or_retains_alias:
                 return
@@ -476,6 +618,25 @@ class CertificateStore:
                     else RESULT_EVASIVE_CERTIFIED
                 ),
                 "equivalent_state": equivalent_state,
+            },
+        )
+
+    def store_isomorphism(
+        self,
+        state_key,
+        verdict,
+        isomorphic_state,
+        vertex_mapping,
+    ):
+        self._store(
+            state_key,
+            {
+                "verdict": (
+                    RESULT_NON_EVASIVE if verdict
+                    else RESULT_EVASIVE_CERTIFIED
+                ),
+                "isomorphic_state": isomorphic_state,
+                "vertex_isomorphism": tuple(vertex_mapping),
             },
         )
 
@@ -664,6 +825,37 @@ def log_heartbeat(
             search_stats.certificate_equivalence_aliases
         ),
         "normalized_cache_key_format": "labeled_maximal_facet_bitmasks",
+        "isomorphism_complex_cache": bool(ISOMORPHISM_COMPLEX_CACHE),
+        "isomorphism_cache_max_failures": int(
+            ISOMORPHISM_CACHE_MAX_FAILURES
+        ),
+        "isomorphism_cache_hits": int(
+            search_stats.isomorphism_cache_hits
+        ),
+        "isomorphism_cache_entries": int(
+            search_stats.isomorphism_cache_entries
+        ),
+        "isomorphism_cache_peak_entries": int(
+            search_stats.isomorphism_cache_peak_entries
+        ),
+        "isomorphism_cache_success_entries": int(
+            search_stats.isomorphism_cache_success_entries
+        ),
+        "isomorphism_cache_failure_entries": int(
+            search_stats.isomorphism_cache_failure_entries
+        ),
+        "isomorphism_cache_evictions": int(
+            search_stats.isomorphism_cache_evictions
+        ),
+        "isomorphism_key_computations": int(
+            search_stats.isomorphism_key_computations
+        ),
+        "certificate_isomorphism_aliases": int(
+            search_stats.certificate_isomorphism_aliases
+        ),
+        "isomorphism_cache_key_format": (
+            "colored_vertex_facet_incidence_canonical_graph"
+        ),
         # "paths_completed" is retained as the user-facing short name. More
         # precisely, it counts terminal cache-miss classifications. A state
         # can be counted again if it was evicted and later revisited.
@@ -1055,6 +1247,7 @@ def find_nonevasive_witness(
     root_bitset,
     witness_cache,
     normalized_cache,
+    isomorphism_cache,
     certificate_store,
     vertex_bits,
     strategy="random",
@@ -1077,6 +1270,10 @@ def find_nonevasive_witness(
     sets determine the resulting state exactly. The optional normalized cache
     additionally shares completed results when different state keys produce
     the exact same labeled facet-mask tuple.
+
+    The optional isomorphism cache is consulted only after both exact caches.
+    It canonically labels the colored vertex-facet incidence graph and stores
+    an explicit label bijection for independent certificate verification.
     """
     search_stats.recursive_calls += 1
     search_stats.deepest_path = max(search_stats.deepest_path, depth)
@@ -1088,7 +1285,11 @@ def find_nonevasive_witness(
         return cached[0]
 
     normalized_facets = None
-    if NORMALIZED_COMPLEX_CACHE or STATE_ENGINE == "bitset":
+    if (
+        NORMALIZED_COMPLEX_CACHE
+        or ISOMORPHISM_COMPLEX_CACHE
+        or STATE_ENGINE == "bitset"
+    ):
         normalized_facets = root_bitset.state_facets(*state_key)
 
     if NORMALIZED_COMPLEX_CACHE:
@@ -1105,6 +1306,45 @@ def find_nonevasive_witness(
             witness_cache.store(state_key, verdict, winning_vertex)
             certificate_store.store_equivalence(
                 state_key, verdict, representative_state
+            )
+            enforce_search_time_limit()
+            return verdict
+
+    isomorphism_key = None
+    label_to_canonical = None
+    if ISOMORPHISM_COMPLEX_CACHE:
+        search_stats.isomorphism_key_computations += 1
+        isomorphism_key, label_to_canonical = canonical_incidence_key(
+            normalized_facets,
+            root_bitset.vertex_order,
+            distinguished_vertices=(
+                PROTECTED_VERTICES
+                if PROTECTED_VERTEX_POLICY == "restrict"
+                else ()
+            ),
+        )
+        isomorphism_cached = isomorphism_cache.lookup(
+            isomorphism_key, label_to_canonical
+        )
+        if isomorphism_cached is not _CACHE_MISS:
+            (
+                verdict,
+                winning_vertex,
+                representative_state,
+                vertex_mapping,
+            ) = isomorphism_cached
+            if representative_state == state_key:
+                raise RuntimeError(
+                    "Isomorphism cache returned the current state as an alias"
+                )
+            search_stats.isomorphism_cache_hits += 1
+            search_stats.certificate_isomorphism_aliases += 1
+            witness_cache.store(state_key, verdict, winning_vertex)
+            certificate_store.store_isomorphism(
+                state_key,
+                verdict,
+                representative_state,
+                vertex_mapping,
             )
             enforce_search_time_limit()
             return verdict
@@ -1134,6 +1374,14 @@ def find_nonevasive_witness(
         if NORMALIZED_COMPLEX_CACHE:
             normalized_cache.store(
                 normalized_facets,
+                state_key,
+                terminal_result,
+                _NO_WINNING_VERTEX,
+            )
+        if ISOMORPHISM_COMPLEX_CACHE:
+            isomorphism_cache.store(
+                isomorphism_key,
+                label_to_canonical,
                 state_key,
                 terminal_result,
                 _NO_WINNING_VERTEX,
@@ -1170,6 +1418,7 @@ def find_nonevasive_witness(
             root_bitset,
             witness_cache,
             normalized_cache,
+            isomorphism_cache,
             certificate_store,
             vertex_bits,
             strategy=strategy,
@@ -1192,6 +1441,7 @@ def find_nonevasive_witness(
             root_bitset,
             witness_cache,
             normalized_cache,
+            isomorphism_cache,
             certificate_store,
             vertex_bits,
             strategy=strategy,
@@ -1221,6 +1471,14 @@ def find_nonevasive_witness(
             normalized_cache.store(
                 normalized_facets, state_key, True, v
             )
+        if ISOMORPHISM_COMPLEX_CACHE:
+            isomorphism_cache.store(
+                isomorphism_key,
+                label_to_canonical,
+                state_key,
+                True,
+                v,
+            )
         return True
 
     certificate_store.store_failure(state_key, failed_children)
@@ -1228,6 +1486,14 @@ def find_nonevasive_witness(
     if NORMALIZED_COMPLEX_CACHE:
         normalized_cache.store(
             normalized_facets,
+            state_key,
+            False,
+            _NO_WINNING_VERTEX,
+        )
+    if ISOMORPHISM_COMPLEX_CACHE:
+        isomorphism_cache.store(
+            isomorphism_key,
+            label_to_canonical,
             state_key,
             False,
             _NO_WINNING_VERTEX,
@@ -1247,6 +1513,7 @@ def is_nonevasive(
     vertex_bits = root_bitset.vertex_bits
     witness_cache = WitnessCache()
     normalized_cache = NormalizedComplexCache()
+    isomorphism_cache = IsomorphismComplexCache()
     certificate_store = CertificateStore()
     root_state_key = (int(0), int(0))
     log_heartbeat("running", force=True)
@@ -1261,6 +1528,7 @@ def is_nonevasive(
             root_bitset,
             witness_cache,
             normalized_cache,
+            isomorphism_cache,
             certificate_store,
             vertex_bits,
             strategy=strategy,
@@ -1288,6 +1556,18 @@ def serialize_certificate_state(state_key, record):
         serialized["equivalent_state"] = certificate_state_id(
             record["equivalent_state"]
         )
+    elif "isomorphic_state" in record:
+        serialized["isomorphic_state"] = certificate_state_id(
+            record["isomorphic_state"]
+        )
+        serialized["vertex_isomorphism"] = [
+            {
+                "source_vertex": source_vertex,
+                "target_vertex": target_vertex,
+            }
+            for source_vertex, target_vertex
+            in record["vertex_isomorphism"]
+        ]
     elif "terminal_reason" in record:
         serialized["terminal_reason"] = record["terminal_reason"]
     elif record["verdict"] == RESULT_NON_EVASIVE:
@@ -1321,7 +1601,7 @@ def build_certificate_document(
     ]
     return {
         "format": "simplicial_nonevasiveness_certificate",
-        "schema_version": int(2),
+        "schema_version": int(3),
         "certificate_kind": certificate_kind,
         "result": result,
         "root_state": certificate_state_id((int(0), int(0))),
@@ -1340,6 +1620,12 @@ def build_certificate_document(
             "normalized_complex_cache": bool(NORMALIZED_COMPLEX_CACHE),
             "normalized_cache_max_failures": int(
                 NORMALIZED_CACHE_MAX_FAILURES
+            ),
+            "isomorphism_complex_cache": bool(
+                ISOMORPHISM_COMPLEX_CACHE
+            ),
+            "isomorphism_cache_max_failures": int(
+                ISOMORPHISM_CACHE_MAX_FAILURES
             ),
             "search_state_limit": int(SEARCH_STATE_LIMIT),
             "search_time_limit_seconds": float(
@@ -1374,6 +1660,8 @@ def build_nonevasive_certificate(K, certificate_store, vertex_bits):
         states.append(serialize_certificate_state(state_key, record))
         if "equivalent_state" in record:
             pending.append(record["equivalent_state"])
+        elif "isomorphic_state" in record:
+            pending.append(record["isomorphic_state"])
         elif "terminal_reason" not in record:
             pending.append(record["deletion_child"])
             pending.append(record["link_child"])
@@ -1408,6 +1696,8 @@ def build_evasive_certificate(K, certificate_store, vertex_bits):
         states.append(serialize_certificate_state(state_key, record))
         if "equivalent_state" in record:
             pending.append(record["equivalent_state"])
+        elif "isomorphic_state" in record:
+            pending.append(record["isomorphic_state"])
         elif "terminal_reason" not in record:
             pending.extend(
                 failure["child"]
@@ -1559,6 +1849,25 @@ print(
     flush=True,
 )
 print(
+    f"Isomorphism cache: "
+    f"{search_stats.isomorphism_cache_hits:,} hits; "
+    f"{search_stats.isomorphism_cache_entries:,} current / "
+    f"{search_stats.isomorphism_cache_peak_entries:,} peak "
+    f"({search_stats.isomorphism_cache_success_entries:,} successful, "
+    f"{search_stats.isomorphism_cache_failure_entries:,} failed)",
+    flush=True,
+)
+print(
+    f"Isomorphism-cache failure evictions: "
+    f"{search_stats.isomorphism_cache_evictions:,}",
+    flush=True,
+)
+print(
+    f"Certificate isomorphism aliases: "
+    f"{search_stats.certificate_isomorphism_aliases:,}",
+    flush=True,
+)
+print(
     f"Terminal states classified: "
     f"{search_stats.terminal_states_classified:,}",
     flush=True,
@@ -1643,6 +1952,12 @@ print(
     f"{search_stats.normalized_cache_evictions}; "
     f"certificate_equivalence_aliases="
     f"{search_stats.certificate_equivalence_aliases}; "
+    f"isomorphism_cache_enabled={ISOMORPHISM_COMPLEX_CACHE}; "
+    f"isomorphism_cache_hits={search_stats.isomorphism_cache_hits}; "
+    f"isomorphism_cache_evictions="
+    f"{search_stats.isomorphism_cache_evictions}; "
+    f"certificate_isomorphism_aliases="
+    f"{search_stats.certificate_isomorphism_aliases}; "
     f"state_engine={STATE_ENGINE}; "
     f"elapsed_seconds={elapsed:.6f}; "
     f"peak_rss_mib={peak_rss_mib:.3f}; "

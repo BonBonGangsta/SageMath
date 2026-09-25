@@ -21,6 +21,7 @@ CORRUPTED_BRANCH="${TEST_OUTPUT_DIR}/corrupted_branch.json"
 CORRUPTED_TERMINAL="${TEST_OUTPUT_DIR}/corrupted_terminal.json"
 cp "${PROJECT_DIR}/scripts/knot_nonevasive_v12.sage" "${SOLVER}"
 cp "${PROJECT_DIR}/scripts/simplicial_bitset.py" "${TEST_OUTPUT_DIR}/"
+cp "${PROJECT_DIR}/scripts/simplicial_isomorphism.py" "${TEST_OUTPUT_DIR}/"
 cp "${PROJECT_DIR}/scripts/verify_nonevasive_certificate.sage" "${VERIFIER}"
 
 FACETS_FILE="${PROJECT_DIR}/knots/rudins_ball.txt" \

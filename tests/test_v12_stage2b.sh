@@ -19,6 +19,7 @@ CERTIFICATE="${TEST_OUTPUT_DIR}/evasive_certificate.json"
 CORRUPTED="${TEST_OUTPUT_DIR}/evasive_certificate_corrupted.json"
 cp "${PROJECT_DIR}/scripts/knot_nonevasive_v12.sage" "${SOLVER}"
 cp "${PROJECT_DIR}/scripts/simplicial_bitset.py" "${TEST_OUTPUT_DIR}/"
+cp "${PROJECT_DIR}/scripts/simplicial_isomorphism.py" "${TEST_OUTPUT_DIR}/"
 cp "${PROJECT_DIR}/scripts/verify_nonevasive_certificate.sage" "${VERIFIER}"
 
 FACETS_FILE="${FACETS}" \

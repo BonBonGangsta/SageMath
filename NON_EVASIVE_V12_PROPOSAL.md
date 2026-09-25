@@ -256,7 +256,8 @@ root. The local artifacts are stored under
 ### Stage 5: Improve memoization and exploit symmetry
 
 Status: in progress; Stage 5A normalized-complex memoization completed on
-2026-09-24. Stage 5B is planned.
+2026-09-24 and Stage 5B canonical isomorphism reuse completed on 2026-09-25.
+Automorphism-orbit pruning remains planned as Stage 5C.
 
 - Cache by normalized resulting complexes in addition to operation history.
 - Investigate canonical labeling of the vertex-facet incidence graph so that
@@ -268,7 +269,9 @@ Status: in progress; Stage 5A normalized-complex memoization completed on
 Validation gate:
 
 - Turning symmetry reduction on or off must not change the mathematical result.
-- The verifier must confirm that orbit representatives cover every vertex.
+- The verifier must confirm every isomorphism map directly.
+- In Stage 5C, the verifier must confirm that orbit representatives cover
+  every vertex.
 
 Stage 5A validation performed:
 
@@ -295,6 +298,38 @@ Stage 5A validation performed:
 - Confirmed that missing, nonidentical, mixed-form, and schema-1 equivalence
   aliases are rejected. Cache-on and cache-off runs retain the same
   mathematical result.
+
+Stage 5B validation performed:
+
+- Added an optional cache keyed by the complete canonically labeled
+  vertex-facet incidence graph, with distinct color classes for vertices and
+  facets. No digest is used. Strict protected-vertex searches additionally
+  distinguish protected from unprotected vertices so restricted-search cache
+  results remain valid.
+- Preserved lookup order: operation history first, exact labeled facets
+  second, and isomorphism third. Canonical labeling therefore runs only when
+  both cheaper exact caches miss.
+- Added a separately configurable bounded LRU for failed isomorphism classes
+  (`ISOMORPHISM_CACHE_MAX_FAILURES`, default 100,000), along with heartbeat,
+  certificate-metadata, final-result, runner, and benchmark fields.
+- Kept the feature opt-in (`ISOMORPHISM_COMPLEX_CACHE=false` by default)
+  because its fixed canonical-label cost can outweigh the saved recursion on
+  small inputs.
+- Extended certificates to schema version 3 with `isomorphic_state` edges and
+  explicit source-to-target vertex bijections. The independent verifier
+  checks total coverage, bijectivity, mapped facets, verdicts, reachability,
+  proof-form exclusivity, and cycles without invoking the search cache.
+- Exhaustively compared the incidence-graph keys with an independent
+  brute-force permutation canonicalizer for all 189 labeled complexes on at
+  most four vertices. Colored-vertex and explicit-map tests also passed.
+- With Rudin's ball and seed 13, exact caching alone materialized 57 states;
+  enabling isomorphism reuse materialized 43 and produced 10 verified
+  isomorphism aliases. Both runs returned `NON_EVASIVE` and their certificates
+  independently verified. Elapsed time on this tiny fixture rose from about
+  0.11 to 0.13 seconds, supporting the opt-in default.
+- Confirmed that missing targets, absent or partial maps, out-of-range target
+  labels, mixed proof forms, and schema-2 isomorphism records are rejected.
+  Legacy schema-1 and schema-2 support remains covered by earlier suites.
 
 ### Stage 6: Improve branching and obstruction scheduling
 
@@ -389,3 +424,4 @@ correctness, certificates, and checkpointing.
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 4B: integrated the bitset representation after cache lookup and retained a Sage replay engine for reference testing. | Both engines produced identical independently verified certificates for Rudin's ball and a recursive evasive fixture; every cache miss materialized exactly one Sage state. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 4C: added sound state/time limits and a non-overwriting sequential engine benchmark runner. | State and time stops returned `INCONCLUSIVE_RESOURCE_LIMIT` without certificates; bounded bitset and Sage-reference smoke runs produced an auditable summary. |
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 5A: cached exact labeled complexes across different link/deletion histories and added schema-2 equivalence proof edges. | Cache-on/off results verified; the suspension fixture fell from 24 to 16 materializations; positive and negative aliases verified; corrupt aliases were rejected. |
+| 2026-09-25 | `feature/nonevasive-v12` | Stage 5B: added opt-in canonical isomorphism memoization and schema-3 bijection proof edges. | Exhaustive keys matched brute force on 189 small complexes; Rudin's ball fell from 57 to 43 materializations; cache-on/off certificates verified; malformed maps were rejected. |

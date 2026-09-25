@@ -173,7 +173,7 @@ Each benchmark creates a new timestamped directory under
 engines one at a time, and writes `summary.tsv`, logs, and any independently
 verified conclusive certificates.
 
-## Normalized-Complex Memoization
+## Normalized and Isomorphic-Complex Memoization
 
 Stage 5A enables a second cache by default. After an operation-history cache
 miss, v12 canonicalizes the resulting maximal facet masks and reuses a
@@ -191,11 +191,38 @@ proof construction. Proof records are retained separately for certificate
 construction, so checkpointing or disk-backed proof storage is still needed
 for searches whose negative certificates exceed memory.
 
-This stage does not identify complexes that are merely isomorphic under a
-vertex relabeling. Canonical isomorphism and automorphism-orbit reduction are
-reserved for Stage 5B.
+Stage 5B adds a third, opt-in cache for complexes that are isomorphic under a
+vertex relabeling:
 
-Certificates containing reused results use schema version 2 and record an
-`equivalent_state` edge. The independent verifier reconstructs both states and
-requires their labeled facets and verdicts to agree. Alias-free schema-1
-certificates remain supported.
+```bash
+ISOMORPHISM_COMPLEX_CACHE=true
+ISOMORPHISM_CACHE_MAX_FAILURES=100000
+```
+
+It canonically labels the complete vertex-facet incidence graph with separate
+colors for simplicial vertices and facet nodes. In strict protected-vertex
+mode, protected and unprotected vertices receive separate colors as well. The
+key is the complete canonical graph, not a probabilistic digest. Exact cache
+lookups remain first, so canonical labeling is attempted only after both exact
+caches miss.
+
+The isomorphism cache is disabled by default because canonical labeling has a
+measurable fixed cost. On Rudin's ball with seed 13 it reduced Sage state
+materializations from 57 to 43 and produced 10 independently verified
+isomorphism aliases, but this very small run took about 0.13 seconds instead
+of 0.11 seconds. Enable it for representative bounded comparisons before a
+long search.
+
+Current certificates use schema version 3. Exact labeled reuse records an
+`equivalent_state` edge; isomorphic reuse records an `isomorphic_state` edge
+and the complete source-to-target vertex bijection. The independent verifier
+reconstructs both states and verifies equality or the claimed simplicial
+isomorphism directly. Legacy schema-1 and schema-2 certificates remain
+supported. Automorphism-orbit branch reduction is a separate future stage.
+
+Run the exhaustive canonical-label and cache-on/off regression suite with:
+
+```bash
+docker compose run --rm --entrypoint /bin/bash sagemath-runner \
+  -c 'cd /workspace && bash tests/test_v12_stage5b.sh'
+```

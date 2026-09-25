@@ -18,6 +18,7 @@ FACETS="${PROJECT_DIR}/tests/data/acyclic_evasive_suspension.txt"
 POSITIVE_FACETS="${PROJECT_DIR}/knots/rudins_ball.txt"
 cp "${PROJECT_DIR}/scripts/knot_nonevasive_v12.sage" "${SOLVER}"
 cp "${PROJECT_DIR}/scripts/simplicial_bitset.py" "${TEST_OUTPUT_DIR}/"
+cp "${PROJECT_DIR}/scripts/simplicial_isomorphism.py" "${TEST_OUTPUT_DIR}/"
 cp "${PROJECT_DIR}/scripts/verify_nonevasive_certificate.sage" "${VERIFIER}"
 
 run_case() {
@@ -90,7 +91,7 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as input_file:
     document = json.load(input_file)
 aliases = [state for state in document["states"] if "equivalent_state" in state]
-assert document["schema_version"] == 2
+assert document["schema_version"] == 3
 assert len(aliases) == 1
 assert all(state["verdict"] == "NON_EVASIVE" for state in aliases)
 ' "${POSITIVE_CERTIFICATE}"
@@ -131,8 +132,8 @@ with open(enabled_path, encoding="utf-8") as input_file:
     enabled = json.load(input_file)
 with open(disabled_path, encoding="utf-8") as input_file:
     disabled = json.load(input_file)
-assert enabled["schema_version"] == 2
-assert disabled["schema_version"] == 2
+assert enabled["schema_version"] == 3
+assert disabled["schema_version"] == 3
 assert enabled["result"] == disabled["result"] == "EVASIVE_CERTIFIED"
 aliases = [state for state in enabled["states"] if "equivalent_state" in state]
 assert len(aliases) == 1
@@ -182,6 +183,10 @@ write_variant(
 disabled["schema_version"] = 1
 with open(f"{output_dir}/legacy_schema1.json", "w", encoding="utf-8") as output_file:
     json.dump(disabled, output_file)
+
+enabled["schema_version"] = 2
+with open(f"{output_dir}/legacy_schema2.json", "w", encoding="utf-8") as output_file:
+    json.dump(enabled, output_file)
 ' \
     "${TEST_OUTPUT_DIR}/true.json" \
     "${TEST_OUTPUT_DIR}/false.json" \
@@ -211,9 +216,19 @@ done
 grep -Fq 'CERTIFICATE_VALID: EVASIVE_CERTIFIED;' \
     "${TEST_OUTPUT_DIR}/legacy_schema1.log"
 
+"${SAGE_BIN}" "${VERIFIER}" \
+    "${FACETS}" "${TEST_OUTPUT_DIR}/legacy_schema2.json" \
+    >"${TEST_OUTPUT_DIR}/legacy_schema2.log" 2>&1 || {
+    cat "${TEST_OUTPUT_DIR}/legacy_schema2.log" >&2
+    exit 1
+}
+grep -Fq 'CERTIFICATE_VALID: EVASIVE_CERTIFIED;' \
+    "${TEST_OUTPUT_DIR}/legacy_schema2.log"
+
 echo "PASS: normalized cache strictly reduced Sage materializations"
 echo "PASS: positive and negative equivalence certificates verified"
 echo "PASS: cache-on and cache-off conclusions independently verified"
 echo "PASS: malformed equivalence aliases were rejected"
 echo "PASS: alias-free schema-1 certificates remain supported"
+echo "PASS: schema-2 equivalence certificates remain supported"
 echo "All Stage 5A tests passed."

@@ -16,6 +16,7 @@ trap 'rm -rf "${TEST_OUTPUT_DIR}"' EXIT
 TEMP_V12_SCRIPT="${TEST_OUTPUT_DIR}/knot_nonevasive_v12.sage"
 cp "${V12_SCRIPT}" "${TEMP_V12_SCRIPT}"
 cp "${PROJECT_DIR}/scripts/simplicial_bitset.py" "${TEST_OUTPUT_DIR}/"
+cp "${PROJECT_DIR}/scripts/simplicial_isomorphism.py" "${TEST_OUTPUT_DIR}/"
 
 run_case() {
     local name=$1

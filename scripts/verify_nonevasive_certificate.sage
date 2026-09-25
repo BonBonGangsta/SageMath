@@ -154,6 +154,59 @@ def verify_failure_terminal(K, reason):
         raise VerificationError(f"Terminal claim is false: {reason}")
 
 
+def verify_vertex_isomorphism(source_K, target_K, serialized_mapping):
+    if not isinstance(serialized_mapping, list):
+        raise VerificationError("Vertex isomorphism must be a list")
+
+    mapping = {}
+    target_vertices_seen = set()
+    for entry in serialized_mapping:
+        if not isinstance(entry, dict) or set(entry) != {
+            "source_vertex",
+            "target_vertex",
+        }:
+            raise VerificationError("Malformed vertex-isomorphism entry")
+        source_vertex = entry["source_vertex"]
+        target_vertex = entry["target_vertex"]
+        if type(source_vertex) is not int or type(target_vertex) is not int:
+            raise VerificationError(
+                "Vertex-isomorphism labels must be integers"
+            )
+        if source_vertex in mapping:
+            raise VerificationError(
+                "Vertex isomorphism repeats a source vertex"
+            )
+        if target_vertex in target_vertices_seen:
+            raise VerificationError(
+                "Vertex isomorphism repeats a target vertex"
+            )
+        mapping[source_vertex] = target_vertex
+        target_vertices_seen.add(target_vertex)
+
+    source_vertices = {int(vertex) for vertex in source_K.vertices()}
+    target_vertices = {int(vertex) for vertex in target_K.vertices()}
+    if set(mapping) != source_vertices:
+        raise VerificationError(
+            "Vertex isomorphism does not cover the source vertices"
+        )
+    if target_vertices_seen != target_vertices:
+        raise VerificationError(
+            "Vertex isomorphism does not cover the target vertices"
+        )
+
+    mapped_facets = sorted(
+        (
+            sorted(mapping[int(vertex)] for vertex in facet)
+            for facet in source_K.facets()
+        ),
+        key=lambda facet: (len(facet), facet),
+    )
+    if mapped_facets != canonical_facets(target_K):
+        raise VerificationError(
+            "Vertex mapping is not a simplicial isomorphism"
+        )
+
+
 def verify_certificate(facets_path, certificate_path):
     root = SimplicialComplex(load_facets(facets_path))
     with Path(certificate_path).open(encoding="utf-8") as certificate_file:
@@ -162,7 +215,7 @@ def verify_certificate(facets_path, certificate_path):
     if document.get("format") != "simplicial_nonevasiveness_certificate":
         raise VerificationError("Unknown certificate format")
     schema_version = document.get("schema_version")
-    if schema_version not in {1, 2}:
+    if schema_version not in {1, 2, 3}:
         raise VerificationError("Unsupported certificate schema version")
     certificate_kind = document.get("certificate_kind")
     expected_results = {
@@ -236,7 +289,14 @@ def verify_certificate(facets_path, certificate_path):
         )
 
         equivalent_state = record.get("equivalent_state")
+        isomorphic_state = record.get("isomorphic_state")
         terminal_reason = record.get("terminal_reason")
+        if ("isomorphic_state" in record) != (
+            "vertex_isomorphism" in record
+        ):
+            raise VerificationError(
+                "Isomorphism record requires both target and vertex mapping"
+            )
         if equivalent_state is not None:
             if schema_version < 2:
                 raise VerificationError(
@@ -252,6 +312,8 @@ def verify_certificate(facets_path, certificate_path):
                 "deletion_child",
                 "link_child",
                 "failed_children",
+                "isomorphic_state",
+                "vertex_isomorphism",
             } & set(record)
             if conflicting_fields:
                 raise VerificationError(
@@ -266,6 +328,37 @@ def verify_certificate(facets_path, certificate_path):
                 raise VerificationError(
                     "Equivalent states do not have identical facets"
                 )
+        elif "isomorphic_state" in record:
+            if schema_version < 3:
+                raise VerificationError(
+                    "Isomorphism records require certificate schema 3"
+                )
+            if not isinstance(isomorphic_state, str):
+                raise VerificationError(
+                    "Isomorphic state must be a state identifier"
+                )
+            conflicting_fields = {
+                "equivalent_state",
+                "terminal_reason",
+                "winning_vertex",
+                "deletion_child",
+                "link_child",
+                "failed_children",
+            } & set(record)
+            if conflicting_fields:
+                raise VerificationError(
+                    "Isomorphism record contains another proof form"
+                )
+            verify_state(isomorphic_state, expected_verdict)
+            target_record = states[isomorphic_state]
+            target_K = reconstruct_state(
+                root, *target_record["_state_key"], vertex_order
+            )
+            verify_vertex_isomorphism(
+                K,
+                target_K,
+                record.get("vertex_isomorphism"),
+            )
         elif terminal_reason is not None:
             if expected_verdict == "NON_EVASIVE":
                 verify_success_terminal(K, terminal_reason)
