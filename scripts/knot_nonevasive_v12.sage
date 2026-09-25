@@ -19,7 +19,13 @@ SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 if str(SCRIPT_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIRECTORY))
 
-from simplicial_bitset import RootBitsetComplex
+from simplicial_bitset import (
+    RootBitsetComplex,
+    classify_facets_cheaply,
+    delete_vertex_from_facets,
+    link_vertex_from_facets,
+    vertices_mask,
+)
 from simplicial_isomorphism import (
     automorphism_vertex_orbits,
     canonical_incidence_key,
@@ -158,6 +164,31 @@ STATE_ENGINE = os.environ.get("STATE_ENGINE", "bitset").strip().lower()
 VALID_STATE_ENGINES = frozenset({"bitset", "sage_reference"})
 if STATE_ENGINE not in VALID_STATE_ENGINES:
     raise ValueError("STATE_ENGINE must be one of: bitset, sage_reference")
+SEARCH_STRATEGY = os.environ.get(
+    "SEARCH_STRATEGY", "random"
+).strip().lower()
+VALID_SEARCH_STRATEGIES = frozenset(
+    {
+        "greedy",
+        "outer_layer",
+        "random",
+        "max_degree",
+        "lexical",
+        "reverse_lexical",
+        "exhaustive",
+    }
+)
+if SEARCH_STRATEGY not in VALID_SEARCH_STRATEGIES:
+    raise ValueError(
+        "SEARCH_STRATEGY must be one of: "
+        + ", ".join(sorted(VALID_SEARCH_STRATEGIES))
+    )
+CHILD_AWARE_MAX_VERTICES = int(
+    os.environ.get("CHILD_AWARE_MAX_VERTICES", "80")
+)
+CHILD_AWARE_MAX_FACETS = int(
+    os.environ.get("CHILD_AWARE_MAX_FACETS", "500")
+)
 SEARCH_STATE_LIMIT = int(os.environ.get("SEARCH_STATE_LIMIT", "0"))
 SEARCH_TIME_LIMIT_SECONDS = float(
     os.environ.get("SEARCH_TIME_LIMIT_SECONDS", "0")
@@ -197,6 +228,9 @@ ISOMORPHISM_COMPLEX_CACHE = get_boolean_environment_setting(
 AUTOMORPHISM_ORBIT_PRUNING = get_boolean_environment_setting(
     "AUTOMORPHISM_ORBIT_PRUNING", False
 )
+CHILD_AWARE_ORDERING = get_boolean_environment_setting(
+    "CHILD_AWARE_ORDERING", False
+)
 
 
 # Adaptive homology policy. Integral homology is always used at the root
@@ -231,6 +265,12 @@ if NORMALIZED_CACHE_MAX_FAILURES < 0:
 
 if ISOMORPHISM_CACHE_MAX_FAILURES < 0:
     raise ValueError("ISOMORPHISM_CACHE_MAX_FAILURES cannot be negative")
+
+if CHILD_AWARE_MAX_VERTICES < 0:
+    raise ValueError("CHILD_AWARE_MAX_VERTICES cannot be negative")
+
+if CHILD_AWARE_MAX_FACETS < 0:
+    raise ValueError("CHILD_AWARE_MAX_FACETS cannot be negative")
 
 if HOMOLOGY_ZZ_MAX_VERTICES < 0:
     raise ValueError("HOMOLOGY_ZZ_MAX_VERTICES cannot be negative")
@@ -329,6 +369,13 @@ class SearchStats:
         self.automorphism_orbits = 0
         self.automorphism_vertices_pruned = 0
         self.certificate_orbit_automorphisms = 0
+        self.child_aware_states_scored = 0
+        self.child_aware_states_skipped = 0
+        self.child_aware_candidates_scored = 0
+        self.child_preclassifications = 0
+        self.child_preclassified_positive = 0
+        self.child_preclassified_negative = 0
+        self.child_aware_states_reordered = 0
         self.terminal_states_classified = 0
         self.deepest_path = 0
         self.link_recursive_calls = 0
@@ -891,6 +938,30 @@ def log_heartbeat(
         "certificate_orbit_automorphisms": int(
             search_stats.certificate_orbit_automorphisms
         ),
+        "child_aware_ordering": bool(CHILD_AWARE_ORDERING),
+        "child_aware_max_vertices": int(CHILD_AWARE_MAX_VERTICES),
+        "child_aware_max_facets": int(CHILD_AWARE_MAX_FACETS),
+        "child_aware_states_scored": int(
+            search_stats.child_aware_states_scored
+        ),
+        "child_aware_states_skipped": int(
+            search_stats.child_aware_states_skipped
+        ),
+        "child_aware_candidates_scored": int(
+            search_stats.child_aware_candidates_scored
+        ),
+        "child_preclassifications": int(
+            search_stats.child_preclassifications
+        ),
+        "child_preclassified_positive": int(
+            search_stats.child_preclassified_positive
+        ),
+        "child_preclassified_negative": int(
+            search_stats.child_preclassified_negative
+        ),
+        "child_aware_states_reordered": int(
+            search_stats.child_aware_states_reordered
+        ),
         # "paths_completed" is retained as the user-facing short name. More
         # precisely, it counts terminal cache-miss classifications. A state
         # can be counted again if it was evicted and later revisited.
@@ -1064,6 +1135,102 @@ def get_vertices_by_strategy(
         return unprotected_vertices
 
     return protected_vertices
+
+
+def child_order_category(link_verdict, deletion_verdict):
+    """Rank exact cheap child outcomes for existential witness search."""
+    if link_verdict is True and deletion_verdict is True:
+        return 0
+    if link_verdict is True and deletion_verdict is None:
+        return 1
+    if link_verdict is None and deletion_verdict is True:
+        return 2
+    if link_verdict is None and deletion_verdict is None:
+        return 3
+    if link_verdict is False:
+        return 4
+    if link_verdict is True:
+        return 5
+    return 6
+
+
+def order_vertices_by_child_preclassification(
+    vertices,
+    normalized_facets,
+    vertex_bits,
+):
+    """Stably prioritize candidates using exact, cheap bitset terminals."""
+    vertices = list(vertices)
+    current_vertex_count = vertices_mask(normalized_facets).bit_count()
+    if (
+        (
+            CHILD_AWARE_MAX_VERTICES > 0
+            and current_vertex_count > CHILD_AWARE_MAX_VERTICES
+        )
+        or (
+            CHILD_AWARE_MAX_FACETS > 0
+            and len(normalized_facets) > CHILD_AWARE_MAX_FACETS
+        )
+    ):
+        search_stats.child_aware_states_skipped += 1
+        return (vertices, {})
+
+    search_stats.child_aware_states_scored += 1
+    search_stats.child_aware_candidates_scored += len(vertices)
+    previews = {}
+    scored_vertices = []
+    for base_index, vertex in enumerate(vertices):
+        enforce_search_time_limit()
+        vertex_bit = vertex_bits[vertex]
+        link_facets = link_vertex_from_facets(
+            normalized_facets, vertex_bit
+        )
+        deletion_facets = delete_vertex_from_facets(
+            normalized_facets, vertex_bit
+        )
+        link_classification = classify_facets_cheaply(link_facets)
+        deletion_classification = classify_facets_cheaply(
+            deletion_facets
+        )
+        search_stats.child_preclassifications += 2
+        for verdict, _reason in (
+            link_classification,
+            deletion_classification,
+        ):
+            if verdict is True:
+                search_stats.child_preclassified_positive += 1
+            elif verdict is False:
+                search_stats.child_preclassified_negative += 1
+
+        previews[vertex] = {
+            "link_facets": link_facets,
+            "deletion_facets": deletion_facets,
+            "link_classification": link_classification,
+            "deletion_classification": deletion_classification,
+        }
+        link_verdict = link_classification[0]
+        deletion_verdict = deletion_classification[0]
+        protected_rank = int(
+            PROTECTED_VERTEX_POLICY == "prefer"
+            and vertex in PROTECTED_VERTICES
+        )
+        score = (
+            protected_rank,
+            child_order_category(link_verdict, deletion_verdict),
+            vertices_mask(link_facets).bit_count(),
+            len(link_facets),
+            vertices_mask(deletion_facets).bit_count(),
+            len(deletion_facets),
+            base_index,
+        )
+        scored_vertices.append((score, vertex))
+
+    ordered_vertices = [
+        vertex for _score, vertex in sorted(scored_vertices)
+    ]
+    if ordered_vertices != vertices:
+        search_stats.child_aware_states_reordered += 1
+    return (ordered_vertices, previews)
 
 def homology_group_is_trivial(group, ring_name):
     """Handle Sage's different ZZ-group and field-vector-space results."""
@@ -1317,6 +1484,7 @@ def find_nonevasive_witness(
     state_key=(int(0), int(0)),
     depth=0,
     is_link_state=False,
+    precomputed_facets=None,
 ):
     """Cache verdicts under compact link/deletion histories.
 
@@ -1345,11 +1513,16 @@ def find_nonevasive_witness(
         search_stats.cache_hits += 1
         return cached[0]
 
-    normalized_facets = None
+    normalized_facets = precomputed_facets
     if (
-        NORMALIZED_COMPLEX_CACHE
-        or ISOMORPHISM_COMPLEX_CACHE
-        or STATE_ENGINE == "bitset"
+        normalized_facets is None
+        and (
+            NORMALIZED_COMPLEX_CACHE
+            or ISOMORPHISM_COMPLEX_CACHE
+            or AUTOMORPHISM_ORBIT_PRUNING
+            or CHILD_AWARE_ORDERING
+            or STATE_ENGINE == "bitset"
+        )
     ):
         normalized_facets = root_bitset.state_facets(*state_key)
 
@@ -1457,6 +1630,15 @@ def find_nonevasive_witness(
         root_distances=root_distances,
     )
     enforce_search_time_limit()
+    if CHILD_AWARE_ORDERING:
+        vertices, child_previews = order_vertices_by_child_preclassification(
+            vertices,
+            normalized_facets,
+            vertex_bits,
+        )
+    else:
+        child_previews = {}
+    enforce_search_time_limit()
     if AUTOMORPHISM_ORBIT_PRUNING:
         search_stats.automorphism_orbit_computations += 1
         orbit_records = automorphism_vertex_orbits(
@@ -1514,6 +1696,9 @@ def find_nonevasive_witness(
             state_key=link_state_key,
             depth=depth + 1,
             is_link_state=True,
+            precomputed_facets=(
+                child_previews.get(v, {}).get("link_facets")
+            ),
         ):
             search_stats.link_first_rejections += 1
             failed_children.append(
@@ -1546,6 +1731,9 @@ def find_nonevasive_witness(
             state_key=deletion_state_key,
             depth=depth + 1,
             is_link_state=False,
+            precomputed_facets=(
+                child_previews.get(v, {}).get("deletion_facets")
+            ),
         ):
             failed_children.append(
                 failed_child_record(
@@ -1750,6 +1938,11 @@ def build_certificate_document(
             "automorphism_orbit_pruning": bool(
                 AUTOMORPHISM_ORBIT_PRUNING
             ),
+            "child_aware_ordering": bool(CHILD_AWARE_ORDERING),
+            "child_aware_max_vertices": int(
+                CHILD_AWARE_MAX_VERTICES
+            ),
+            "child_aware_max_facets": int(CHILD_AWARE_MAX_FACETS),
             "search_state_limit": int(SEARCH_STATE_LIMIT),
             "search_time_limit_seconds": float(
                 SEARCH_TIME_LIMIT_SECONDS
@@ -1862,7 +2055,7 @@ rng = random.Random(seed)
     certificate_store,
     vertex_bits,
     resource_limit,
-) = is_nonevasive(K, strategy="random", rng=rng)
+) = is_nonevasive(K, strategy=SEARCH_STRATEGY, rng=rng)
 print("\n" + "="*50, flush=True)
 if resource_limit is not None:
     final_result = RESULT_INCONCLUSIVE_RESOURCE_LIMIT
@@ -2003,6 +2196,20 @@ print(
     flush=True,
 )
 print(
+    f"Child-aware ordering: "
+    f"{search_stats.child_aware_states_scored:,} states scored; "
+    f"{search_stats.child_aware_states_skipped:,} skipped by size limits; "
+    f"{search_stats.child_aware_states_reordered:,} reordered",
+    flush=True,
+)
+print(
+    f"Child preclassifications: "
+    f"{search_stats.child_preclassifications:,} total "
+    f"({search_stats.child_preclassified_positive:,} positive, "
+    f"{search_stats.child_preclassified_negative:,} negative)",
+    flush=True,
+)
+print(
     f"Terminal states classified: "
     f"{search_stats.terminal_states_classified:,}",
     flush=True,
@@ -2100,10 +2307,21 @@ print(
     f"{search_stats.automorphism_vertices_pruned}; "
     f"certificate_orbit_automorphisms="
     f"{search_stats.certificate_orbit_automorphisms}; "
+    f"search_strategy={SEARCH_STRATEGY}; "
+    f"child_aware_ordering={CHILD_AWARE_ORDERING}; "
+    f"child_aware_states_scored="
+    f"{search_stats.child_aware_states_scored}; "
+    f"child_aware_states_skipped="
+    f"{search_stats.child_aware_states_skipped}; "
+    f"child_aware_states_reordered="
+    f"{search_stats.child_aware_states_reordered}; "
+    f"child_preclassifications="
+    f"{search_stats.child_preclassifications}; "
     f"state_engine={STATE_ENGINE}; "
     f"elapsed_seconds={elapsed:.6f}; "
     f"peak_rss_mib={peak_rss_mib:.3f}; "
     f"recursive_calls={search_stats.recursive_calls}; "
+    f"deepest_path={search_stats.deepest_path}; "
     f"sage_state_materializations="
     f"{search_stats.sage_state_materializations}; "
     f"search_state_limit={SEARCH_STATE_LIMIT}; "

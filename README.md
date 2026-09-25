@@ -253,3 +253,54 @@ Run the exhaustive automorphism-orbit and negative-certificate suite with:
 docker compose run --rm --entrypoint /bin/bash sagemath-runner \
   -c 'cd /workspace && bash tests/test_v12_stage5c.sh'
 ```
+
+## Child-Aware Branch Ordering
+
+Stage 6A adds an opt-in ordering layer that cheaply classifies every immediate
+link and deletion using the bitset representation before choosing which
+candidate to explore first:
+
+```bash
+SEARCH_STRATEGY=random
+CHILD_AWARE_ORDERING=true
+CHILD_AWARE_MAX_VERTICES=80
+CHILD_AWARE_MAX_FACETS=500
+```
+
+The exact cheap cases are empty complexes, simplices, cones, trees,
+one-dimensional non-trees, and disconnected complexes. The base strategy is
+retained as the final tie-breaker, and soft protected vertices remain after
+unprotected candidates. A zero size limit means unlimited; states exceeding a
+positive limit retain the base ordering. The optimization does not change the
+certificate format or omit any candidate.
+
+On Rudin's ball with seed `123456`, child-aware ordering reduced Sage state
+materializations from 57 to 37 and vertex attempts from 36 to 20. The tiny run
+took about 0.12 seconds instead of 0.10 seconds because scoring overhead
+dominated, so the feature remains disabled by default.
+
+Run an auditable sequential A/B comparison on any complex with:
+
+```bash
+docker compose run --rm --entrypoint /bin/bash \
+  -e BENCHMARK_STATE_LIMIT=50000 \
+  -e BENCHMARK_TIME_LIMIT_SECONDS=3600 \
+  -e RANDOM_SEED=123456 \
+  sagemath-runner -c '
+    cd /workspace
+    bash benchmarks/run_v12_branching_benchmark.sh \
+      path/to/facets.txt experiment_name
+  '
+```
+
+The baseline and child-aware jobs run sequentially with identical settings.
+Timestamped output contains logs, `summary.tsv`, and independently verified
+certificates for any conclusive result. It is safe to run this comparison now;
+Stages 6B and later are not prerequisites.
+
+Run the Stage 6A regression suite with:
+
+```bash
+docker compose run --rm --entrypoint /bin/bash sagemath-runner \
+  -c 'cd /workspace && bash tests/test_v12_stage6a.sh'
+```

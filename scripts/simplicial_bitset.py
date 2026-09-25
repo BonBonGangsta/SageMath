@@ -64,6 +64,64 @@ def vertices_mask(facet_masks):
     return result
 
 
+def facet_complex_is_connected(facet_masks):
+    """Return connectivity of the one-skeleton using only facet masks."""
+    normalized = normalize_facet_masks(facet_masks)
+    present = vertices_mask(normalized)
+    if present == 0:
+        return False
+
+    reached = present & -present
+    while True:
+        expanded = reached
+        for facet_mask in normalized:
+            if facet_mask & reached:
+                expanded |= facet_mask
+        if expanded == reached:
+            return reached == present
+        reached = expanded
+
+
+def classify_facets_cheaply(facet_masks):
+    """Recognize exact terminal cases without materializing a Sage complex.
+
+    Return ``(verdict, reason)`` using the same terminal precedence as v12,
+    or ``(None, None)`` when deeper topology/search is still required.
+    """
+    normalized = normalize_facet_masks(facet_masks)
+    present = vertices_mask(normalized)
+    if present == 0:
+        return (False, "empty_complex")
+
+    if len(normalized) == 1 and normalized[0] == present:
+        return (True, "simplex")
+
+    common_vertices = present
+    for facet_mask in normalized:
+        common_vertices &= facet_mask
+    if common_vertices:
+        return (True, "cone")
+
+    maximum_facet_size = max(mask.bit_count() for mask in normalized)
+    if maximum_facet_size == 2:
+        vertex_count = present.bit_count()
+        edge_count = sum(
+            mask.bit_count() == 2 for mask in normalized
+        )
+        is_tree = (
+            facet_complex_is_connected(normalized)
+            and edge_count == vertex_count - 1
+        )
+        if is_tree:
+            return (True, "tree")
+        return (False, "one_dimensional_not_tree")
+
+    if not facet_complex_is_connected(normalized):
+        return (False, "disconnected")
+
+    return (None, None)
+
+
 def delete_vertex_from_facets(facet_masks, vertex_bit):
     """Return maximal facets after deleting one vertex."""
     bit = _as_vertex_bit(vertex_bit)

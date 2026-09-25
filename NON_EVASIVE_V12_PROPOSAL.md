@@ -363,7 +363,8 @@ Stage 5C validation performed:
 
 ### Stage 6: Improve branching and obstruction scheduling
 
-Status: planned
+Status: in progress; Stage 6A child-aware branch ordering completed on
+2026-09-25. Adaptive obstruction scheduling remains planned as Stage 6B.
 
 - Classify both immediate children cheaply before entering deep recursion.
 - Prefer vertices whose links are already simplices, trees, cones, or other
@@ -379,6 +380,57 @@ Validation gate:
 
 - Each rejection test must be mathematically one-sided and covered by a test.
 - Disabling an optimization must affect performance only, not the final result.
+
+Stage 6A validation performed:
+
+- Added an opt-in child-aware ordering layer after the configured base vertex
+  strategy. `SEARCH_STRATEGY` now exposes the existing random, greedy,
+  outer-layer, maximum-degree, lexical, reverse-lexical, and exhaustive
+  strategies without changing the default seeded-random behavior.
+- Added exact bitset recognition for empty complexes, simplices, cones, trees,
+  one-dimensional non-trees, and disconnected complexes. These classifications
+  rank candidates but do not replace recursive proof obligations or alter the
+  certificate schema.
+- Prioritized candidates with two cheaply certified positive children, then
+  candidates with one positive child, unresolved candidates, and finally
+  candidates with a cheaply certified negative child. The original strategy
+  remains the final tie-breaker, and soft protected vertices retain their
+  ordering priority.
+- Reused precomputed child facet tuples in the selected recursive calls, so
+  scoring does not force the bitset state to be reconstructed a second time.
+- Added configurable size gates (`CHILD_AWARE_MAX_VERTICES`, default 80, and
+  `CHILD_AWARE_MAX_FACETS`, default 500). Zero means unlimited. The feature
+  remains opt-in (`CHILD_AWARE_ORDERING=false`) because full candidate scoring
+  can cost more than it saves on small or asymmetric states.
+- Exhaustively matched every cheap classification and connectivity result with
+  SageMath for all 189 labeled complexes on at most four vertices: 79 positive
+  terminals, 87 negative terminals, and 23 correctly left unresolved.
+- With Rudin's ball, seed `123456`, exact normalized caching, and other
+  symmetry options disabled, child-aware ordering reduced materialized states
+  from 57 to 37 and vertex attempts from 36 to 20. Both certificates verified,
+  and bitset and Sage-reference engines produced identical proof states.
+  Elapsed time on this tiny case rose from about 0.10 to 0.12 seconds, showing
+  why a representative bounded A/B run is required before long deployment.
+- Confirmed that size-gated fallback reproduces the baseline, protected
+  preference and restriction retain their result semantics, invalid settings
+  fail early, and all earlier suites remain compatible.
+- Added a sequential, non-overwriting branching benchmark runner. It holds the
+  input, seed, base strategy, caches, symmetry settings, engine, and resource
+  limits fixed; changes only child-aware ordering; and verifies every
+  conclusive certificate independently. This runner is ready for an unresolved
+  server test without waiting for Stage 6B or later stages.
+
+Recorded Stage 6A validation benchmark (`RANDOM_SEED=123456`, random base
+strategy, normalized cache enabled, other symmetry options disabled, unlimited
+state/time limits):
+
+| Ordering | Result | States | Vertex attempts | Deepest path | Seconds | Certificate |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| baseline | `NON_EVASIVE` | 57 | 36 | 10 | 0.113251 | verified |
+| child-aware | `NON_EVASIVE` | 37 | 20 | 9 | 0.119396 | verified |
+
+The preserved local artifacts are stored under
+`outputs/benchmarks/rudins_stage6a_seed123456_20260925/`.
 
 ### Stage 7: Add checkpoint and resume support
 
@@ -456,3 +508,4 @@ correctness, certificates, and checkpointing.
 | 2026-09-24 | `feature/nonevasive-v12` | Stage 5A: cached exact labeled complexes across different link/deletion histories and added schema-2 equivalence proof edges. | Cache-on/off results verified; the suspension fixture fell from 24 to 16 materializations; positive and negative aliases verified; corrupt aliases were rejected. |
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 5B: added opt-in canonical isomorphism memoization and schema-3 bijection proof edges. | Exhaustive keys matched brute force on 189 small complexes; Rudin's ball fell from 57 to 43 materializations; cache-on/off certificates verified; malformed maps were rejected. |
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 5C: added opt-in automorphism-orbit pruning and schema-4 orbit justifications. | Exhaustive orbits and 641 maps matched brute force; the suspension fixture fell from 24 to 16 materializations; corrupt orbit evidence was rejected. |
+| 2026-09-25 | `feature/nonevasive-v12` | Stage 6A: added exact child preclassification, size-gated child-aware ordering, and a sequential branching benchmark. | Cheap classifications matched Sage on 189 complexes; Rudin's ball fell from 57 to 37 materializations; both engines and certificates matched; protected and fallback semantics passed. |
