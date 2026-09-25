@@ -149,8 +149,8 @@ SEARCH_TIME_LIMIT_SECONDS=3600 \
 A limit stop returns `INCONCLUSIVE_RESOURCE_LIMIT` and does not emit a proof
 certificate. The time limit is cooperative: it is checked between search
 operations and before homology, but it cannot interrupt one SageMath operation
-that is already running. A bounded stop does not yet preserve resumable search
-state; checkpoint/resume remains planned for Stage 7.
+that is already running. Configure `CHECKPOINT_PATH` to preserve completed
+search states for a later resumed session, as described below.
 
 Compare the bitset and Sage-reference engines sequentially with identical
 limits and seed using:
@@ -425,4 +425,34 @@ Run the Stage 7 regression suite with:
 ```bash
 docker compose run --rm --entrypoint /bin/bash sagemath-runner \
   -c 'cd /workspace && bash tests/test_v12_stage7.sh'
+```
+
+## Independent Reference and Regression Suite
+
+Stage 8 adds a plain-Python implementation of the recursive definition that
+does not import the production search, bitset, cache, obstruction, or
+certificate code. The v12 result is compared against that independent oracle
+with the normalized cache both disabled and enabled for all 189 distinct
+simplicial complexes on at most four vertices. Every permutation of each
+ambient label set is also checked, for 4,101 relabeled production searches.
+
+Named fixtures cover a point, filled simplex, tree, cycle, disconnected
+zero-dimensional complex, cones over non-evasive and evasive bases, and the
+boundary of a tetrahedron. The end-to-end suite additionally verifies positive
+and negative certificate serialization round trips, rejects deliberately
+corrupted proofs, and checks preferred versus strict protected-vertex result
+semantics.
+
+Run Stage 8 alone with:
+
+```bash
+docker compose run --rm --entrypoint /bin/bash sagemath-runner \
+  -c 'cd /workspace && bash tests/test_v12_stage8.sh'
+```
+
+Run every accumulated v12 regression suite in stage order with:
+
+```bash
+docker compose run --rm --entrypoint /bin/bash sagemath-runner \
+  -c 'cd /workspace && bash tests/run_v12_regression_suite.sh'
 ```

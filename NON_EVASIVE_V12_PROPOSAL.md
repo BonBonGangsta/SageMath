@@ -528,7 +528,7 @@ Validation performed:
 
 ### Stage 8: Add a regression and reference test suite
 
-Status: planned throughout all stages
+Status: completed on 2026-09-25.
 
 Include at least:
 
@@ -541,6 +541,31 @@ Include at least:
 - protected-preference and strict-restriction comparisons;
 - exhaustive comparison with a small independent reference implementation;
 - certificate serialization, verification, and corruption tests.
+
+Validation performed:
+
+- Added a deliberately small, independent recursive implementation using
+  immutable Python sets. It imports no production bitset, search, cache,
+  obstruction, or certificate implementation.
+- Enumerated all 189 distinct nonempty facet antichains on at most four
+  vertices. Production search matched the independent verdict for every
+  complex with normalized memoization both disabled and enabled.
+- Checked every permutation of every ambient label set: all 4,101 relabeled
+  production searches agreed with the original and independent verdicts, using
+  sparse nonzero labels to expose label-index assumptions.
+- Added named fixtures for a point, tree, disconnected zero-dimensional
+  complex, cones over a tree and cycle, and a tetrahedron boundary, alongside
+  the existing simplex, cycle, protected-policy, and recursive evasive cases.
+- Verified positive and recursive negative certificates after JSON round trips,
+  independently accepted cache-on and cache-off proofs, and rejected a broken
+  input binding and incomplete negative child coverage.
+- Confirmed that preferred protected vertices retain a conclusive
+  `NON_EVASIVE` result, while the deliberately incomplete strict policy returns
+  `INCONCLUSIVE_RESTRICTED` without a certificate.
+- Added one ordered runner for every accumulated v12 suite so the complete
+  stage history can be validated without deleting or replacing earlier tests.
+- Ran that consolidated matrix successfully: all 14 bounded-search and
+  Stage 1 through Stage 8 suites passed in a fresh disposable Sage container.
 
 ## Related experimental scripts
 
@@ -566,10 +591,10 @@ correctness, certificates, and checkpointing.
 
 ## Recommended next sequence
 
-1. Run a bounded unresolved-complex experiment with the Stage 6 features and
-   Stage 7 checkpointing enabled.
-2. Complete Stage 8 by consolidating the accumulated fixtures into an
-   exhaustive independent reference suite.
+1. Run the consolidated v12 regression command before each merge or deployment.
+2. Run a bounded unresolved-complex experiment with the Stage 6 features and
+   Stage 7 checkpointing enabled, comparing the most promising configuration
+   against the fixed baseline.
 3. Review the full v12 branch and its preserved stage-by-stage history before
    merging or deploying it as the primary long-search implementation.
 
@@ -591,3 +616,4 @@ correctness, certificates, and checkpointing.
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 6A: added exact child preclassification, size-gated child-aware ordering, and a sequential branching benchmark. | Cheap classifications matched Sage on 189 complexes; Rudin's ball fell from 57 to 37 materializations; both engines and certificates matched; protected and fallback semantics passed. |
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 6B: added profiled adaptive obstruction scheduling, configurable small-prime homology, and a certified no-free-face obstruction. | Free-face detection matched Sage on 189 complexes; the Dunce Hat certificate fell from nine states to one; GF(3) detected Moore-space torsion missed by GF(2); certificates and the A/B runner verified. |
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 7: added atomic, checksummed checkpoint/resume with compatibility fingerprints, overwrite protection, and cooperative signal handling. | A bounded Rudin run resumed to the exact uninterrupted 47-state certificate; SIGTERM resumed equivalently; completed and strict-policy resumes passed; stale and corrupted checkpoints were rejected. |
+| 2026-09-25 | `feature/nonevasive-v12` | Stage 8: added an independent recursive oracle, exhaustive small-complex and relabeling comparisons, named topology fixtures, and a consolidated regression runner. | Cache-on/off verdicts matched for all 189 complexes; all 4,101 relabelings agreed; certificates and corruptions behaved correctly; all 14 accumulated suites passed. |
