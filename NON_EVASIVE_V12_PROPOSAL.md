@@ -500,9 +500,9 @@ Validation performed:
   record, Sage version, and SHA-256 hashes of the solver, bitset engine, and
   isomorphism implementation. Resume refuses mismatched input, configuration,
   implementation, schema, structure, or payload checksum.
-- Kept state and time limits outside the compatibility fingerprint so a new
-  session can safely receive a larger budget without changing the underlying
-  search semantics.
+- Kept state, time, and memory limits outside the compatibility fingerprint so
+  a new session can safely receive a larger budget without changing the
+  underlying search semantics.
 - Added explicit overwrite protection. A fresh run refuses an existing path
   unless `CHECKPOINT_OVERWRITE=true`; ordinary continuation requires
   `CHECKPOINT_RESUME=true`. Completed checkpoints are retained rather than
@@ -591,7 +591,7 @@ The wrapper default heartbeat interval is now one day rather than five minutes
 to keep multi-month logs compact. Forced phase-boundary and final messages are
 retained, and checkpoint frequency remains independent of heartbeat frequency.
 
-## Post-deployment long-run cache correction
+## Post-deployment long-run safeguards
 
 Status: completed on 2026-09-26.
 
@@ -609,6 +609,22 @@ paths with a one-entry exact LRU. Additional launcher tests confirm seed
 forwarding, daily heartbeats, stable batch seeds, unique checkpoints, and
 automatic resume selection. The full 15-suite v12 regression matrix passed in
 a fresh disposable Sage container.
+
+The same canary produced a roughly 220 MiB checkpoint and rewrote it 261 times
+in one hour because each additional 1,000 completed proof records triggered a
+write. New batch launches therefore disable the state-count trigger and use a
+30-minute time trigger (`CHECKPOINT_INTERVAL_STATES=0` and
+`CHECKPOINT_INTERVAL_SECONDS=1800`). Checkpoints remain independent of the
+daily notification heartbeat.
+
+State and time limits default to zero for new batch launches. A cooperative
+18 GiB resident-memory limit remains enabled. When RSS reaches
+`SEARCH_MEMORY_LIMIT_MIB=18432`, the search records an explicit
+`memory_limit_mib` resource stop, writes a resumable checkpoint, and returns
+`INCONCLUSIVE_RESOURCE_LIMIT`. The default leaves approximately 6 GiB below
+the 24 GiB Docker ceiling for checkpoint serialization and transient work.
+The safeguard is best-effort because it runs between search operations and
+cannot interrupt a SageMath operation already in progress.
 
 ## Recommended next sequence
 
@@ -639,3 +655,4 @@ a fresh disposable Sage container.
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 7: added atomic, checksummed checkpoint/resume with compatibility fingerprints, overwrite protection, and cooperative signal handling. | A bounded Rudin run resumed to the exact uninterrupted 47-state certificate; SIGTERM resumed equivalently; completed and strict-policy resumes passed; stale and corrupted checkpoints were rejected. |
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 8: added an independent recursive oracle, exhaustive small-complex and relabeling comparisons, named topology fixtures, and a consolidated regression runner. | Cache-on/off verdicts matched for all 189 complexes; all 4,101 relabelings agreed; certificates and corruptions behaved correctly; all 14 accumulated suites passed. |
 | 2026-09-26 | `fix/v12-long-run-cache` | Corrected normalized/isomorphism representative hits after exact-LRU eviction; made batch jobs deterministic, checkpointed, resumable, and less verbose. | Focused eviction, wrapper, and batch regressions passed; all 15 consolidated suites passed. |
+| 2026-09-26 | `fix/v12-long-run-cache` | Changed production batches to 30-minute time-only checkpoints and added a cooperative 18 GiB RSS stop with checkpoint preservation. | Added state/time/memory limit and launcher regressions; all 15 consolidated suites passed. |

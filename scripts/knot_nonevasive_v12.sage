@@ -199,6 +199,9 @@ SEARCH_STATE_LIMIT = int(os.environ.get("SEARCH_STATE_LIMIT", "0"))
 SEARCH_TIME_LIMIT_SECONDS = float(
     os.environ.get("SEARCH_TIME_LIMIT_SECONDS", "0")
 )
+SEARCH_MEMORY_LIMIT_MIB = float(
+    os.environ.get("SEARCH_MEMORY_LIMIT_MIB", "0")
+)
 if SEARCH_STATE_LIMIT < 0:
     raise ValueError("SEARCH_STATE_LIMIT cannot be negative")
 if (
@@ -207,6 +210,13 @@ if (
 ):
     raise ValueError(
         "SEARCH_TIME_LIMIT_SECONDS must be a finite nonnegative number"
+    )
+if (
+    not math.isfinite(SEARCH_MEMORY_LIMIT_MIB)
+    or SEARCH_MEMORY_LIMIT_MIB < 0
+):
+    raise ValueError(
+        "SEARCH_MEMORY_LIMIT_MIB must be a finite nonnegative number"
     )
 
 
@@ -412,6 +422,7 @@ HEARTBEAT_FILE = os.environ.get("HEARTBEAT_FILE", f"/outputs/heartbeat_{knot_nam
 
 last_heartbeat = 0
 checkpoint_interruption_signal = None
+last_memory_limit_check_monotonic = 0.0
 
 _CACHE_MISS = object()
 _NO_WINNING_VERTEX = object()
@@ -1018,6 +1029,7 @@ def log_heartbeat(
         ),
         "search_state_limit": int(SEARCH_STATE_LIMIT),
         "search_time_limit_seconds": float(SEARCH_TIME_LIMIT_SECONDS),
+        "search_memory_limit_mib": float(SEARCH_MEMORY_LIMIT_MIB),
         "checkpoint_enabled": bool(CHECKPOINT_PATH is not None),
         "checkpoint_path": (
             None if CHECKPOINT_PATH is None else str(CHECKPOINT_PATH)
@@ -1650,13 +1662,36 @@ def request_checkpoint_interruption(signal_number, _frame):
 
 
 def enforce_search_time_limit():
-    """Cooperatively stop between search operations when time is exhausted."""
+    """Cooperatively stop between operations for signals or resources."""
+    global last_memory_limit_check_monotonic
     if checkpoint_interruption_signal is not None:
         search_stats.resource_limit_kind = "interruption_signal"
         search_stats.resource_limit_configured = None
         search_stats.resource_limit_observed = checkpoint_interruption_signal
         search_stats.phase = "interrupted"
         raise SearchInterruptionRequested(checkpoint_interruption_signal)
+
+    # Reading /proc for every recursive call would distort the search. Check
+    # at most every five seconds while retaining several GiB of headroom below
+    # the batch container's hard memory ceiling.
+    if SEARCH_MEMORY_LIMIT_MIB > 0:
+        now_monotonic = time.monotonic()
+        if (
+            last_memory_limit_check_monotonic == 0
+            or now_monotonic - last_memory_limit_check_monotonic >= 5.0
+        ):
+            last_memory_limit_check_monotonic = now_monotonic
+            current_rss_mib, _peak_rss_mib = get_memory_usage_mib()
+            if (
+                current_rss_mib is not None
+                and current_rss_mib >= SEARCH_MEMORY_LIMIT_MIB
+            ):
+                stop_for_resource_limit(
+                    "memory_limit_mib",
+                    float(SEARCH_MEMORY_LIMIT_MIB),
+                    float(current_rss_mib),
+                )
+
     if SEARCH_TIME_LIMIT_SECONDS <= 0:
         return
     elapsed = time.monotonic() - search_stats.started_monotonic
@@ -2204,7 +2239,9 @@ def is_nonevasive(
     rng=None,
 ):
     global checkpoint_interruption_signal
+    global last_memory_limit_check_monotonic
     checkpoint_interruption_signal = None
+    last_memory_limit_check_monotonic = 0.0
     search_stats.reset(len(K.vertices()), strategy)
     root_bitset = RootBitsetComplex(
         canonical_facets(K),
@@ -2894,6 +2931,9 @@ class CheckpointManager:
                 "search_time_limit_seconds": float(
                     SEARCH_TIME_LIMIT_SECONDS
                 ),
+                "search_memory_limit_mib": float(
+                    SEARCH_MEMORY_LIMIT_MIB
+                ),
             },
             "stop": stop,
             "progress": self._progress_record(),
@@ -3012,6 +3052,9 @@ def build_certificate_document(
             "search_state_limit": int(SEARCH_STATE_LIMIT),
             "search_time_limit_seconds": float(
                 SEARCH_TIME_LIMIT_SECONDS
+            ),
+            "search_memory_limit_mib": float(
+                SEARCH_MEMORY_LIMIT_MIB
             ),
             "checkpoint_resume_count": int(
                 search_stats.checkpoint_resume_count
@@ -3351,7 +3394,8 @@ print(
 )
 print(
     f"Configured limits: states={SEARCH_STATE_LIMIT:,}; "
-    f"seconds={SEARCH_TIME_LIMIT_SECONDS:g}",
+    f"seconds={SEARCH_TIME_LIMIT_SECONDS:g}; "
+    f"memory_mib={SEARCH_MEMORY_LIMIT_MIB:g}",
     flush=True,
 )
 print(
@@ -3476,6 +3520,7 @@ print(
     f"{search_stats.sage_state_materializations}; "
     f"search_state_limit={SEARCH_STATE_LIMIT}; "
     f"search_time_limit_seconds={SEARCH_TIME_LIMIT_SECONDS:g}; "
+    f"search_memory_limit_mib={SEARCH_MEMORY_LIMIT_MIB:g}; "
     f"checkpoint_enabled={CHECKPOINT_PATH is not None}; "
     f"checkpoint_writes={search_stats.checkpoint_writes}; "
     f"checkpoint_loaded_states="

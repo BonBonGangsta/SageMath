@@ -23,6 +23,8 @@ run_limited_case() {
     local state_limit=$2
     local time_limit=$3
     local expected_limit=$4
+    local memory_limit=${5:-0}
+    local checkpoint_path=${6:-}
     local log_file="${TEST_OUTPUT_DIR}/${name}.log"
     local certificate="${TEST_OUTPUT_DIR}/${name}.json"
 
@@ -34,6 +36,8 @@ run_limited_case() {
     NORMALIZED_CACHE_MAX_FAILURES=100000 \
     SEARCH_STATE_LIMIT="${state_limit}" \
     SEARCH_TIME_LIMIT_SECONDS="${time_limit}" \
+    SEARCH_MEMORY_LIMIT_MIB="${memory_limit}" \
+    CHECKPOINT_PATH="${checkpoint_path}" \
     "${SAGE_BIN}" "${SOLVER}" >"${log_file}" 2>&1
 
     grep -Fq \
@@ -57,21 +61,42 @@ run_limited_case time_limit 0 0.000000001 time_limit_seconds
 grep -Fq 'Subcomplex cache misses: 0' "${TEST_OUTPUT_DIR}/time_limit.log"
 grep -Fq 'Sage state materializations: 0' "${TEST_OUTPUT_DIR}/time_limit.log"
 
-for invalid_setting in state time; do
+MEMORY_CHECKPOINT="${TEST_OUTPUT_DIR}/memory-limit-checkpoint.json"
+run_limited_case \
+    memory_limit 0 0 memory_limit_mib 1 "${MEMORY_CHECKPOINT}"
+grep -Fq 'Subcomplex cache misses: 0' "${TEST_OUTPUT_DIR}/memory_limit.log"
+grep -Fq 'Sage state materializations: 0' "${TEST_OUTPUT_DIR}/memory_limit.log"
+"${SAGE_BIN}" -python -c '
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as checkpoint_file:
+    checkpoint = json.load(checkpoint_file)
+assert checkpoint["status"] == "resource_limit"
+assert checkpoint["stop"]["kind"] == "memory_limit_mib"
+assert checkpoint["resource_limits"]["search_memory_limit_mib"] == 1.0
+' "${MEMORY_CHECKPOINT}"
+
+for invalid_setting in state time memory; do
     log_file="${TEST_OUTPUT_DIR}/invalid_${invalid_setting}.log"
     state_limit=0
     time_limit=0
+    memory_limit=0
     expected_message=''
     if [[ "${invalid_setting}" == state ]]; then
         state_limit=-1
         expected_message='SEARCH_STATE_LIMIT cannot be negative'
-    else
+    elif [[ "${invalid_setting}" == time ]]; then
         time_limit=nan
         expected_message='SEARCH_TIME_LIMIT_SECONDS must be a finite nonnegative number'
+    else
+        memory_limit=nan
+        expected_message='SEARCH_MEMORY_LIMIT_MIB must be a finite nonnegative number'
     fi
     if FACETS_FILE="${FACETS}" \
         SEARCH_STATE_LIMIT="${state_limit}" \
         SEARCH_TIME_LIMIT_SECONDS="${time_limit}" \
+        SEARCH_MEMORY_LIMIT_MIB="${memory_limit}" \
         "${SAGE_BIN}" "${SOLVER}" >"${log_file}" 2>&1; then
         echo "FAIL: invalid ${invalid_setting} limit was accepted" >&2
         exit 1
@@ -114,7 +139,8 @@ fi
 grep -Fq 'Benchmark output already exists' \
     "${TEST_OUTPUT_DIR}/benchmark_overwrite.log"
 
-echo "PASS: state and cooperative time limits are explicitly inconclusive"
+echo "PASS: state, time, and memory limits are explicitly inconclusive"
+echo "PASS: a memory stop preserved a resumable resource-limit checkpoint"
 echo "PASS: bounded sequential engine benchmark produced a summary"
 echo "PASS: benchmark history cannot be overwritten"
 echo "All bounded-search tests passed."

@@ -134,12 +134,13 @@ certificates, and final statistics.
 
 ## Bounded v12 Searches and Benchmarks
 
-Set either limit to a positive value to bound a search. Zero disables that
+Set any limit to a positive value to bound a search. Zero disables that
 limit:
 
 ```bash
 SEARCH_STATE_LIMIT=50000 \
 SEARCH_TIME_LIMIT_SECONDS=3600 \
+SEARCH_MEMORY_LIMIT_MIB=4096 \
 ./run_sage_and_notify.sh \
   example \
   scripts/knot_nonevasive_v12.sage \
@@ -147,10 +148,11 @@ SEARCH_TIME_LIMIT_SECONDS=3600 \
 ```
 
 A limit stop returns `INCONCLUSIVE_RESOURCE_LIMIT` and does not emit a proof
-certificate. The time limit is cooperative: it is checked between search
-operations and before homology, but it cannot interrupt one SageMath operation
-that is already running. Configure `CHECKPOINT_PATH` to preserve completed
-search states for a later resumed session, as described below.
+certificate. Time and resident-memory limits are cooperative: they are checked
+between search operations and before homology, but cannot interrupt one
+SageMath operation that is already running. Configure `CHECKPOINT_PATH` to
+preserve completed search states for a later resumed session, as described
+below.
 
 Compare the bitset and Sage-reference engines sequentially with identical
 limits and seed using:
@@ -398,9 +400,9 @@ SEARCH_TIME_LIMIT_SECONDS=0 \
   my_complex scripts/knot_nonevasive_v12.sage path/to/facets.txt
 ```
 
-The state and time limits are deliberately excluded from the compatibility
-fingerprint so each resumed session can receive a new budget. The following
-must still match:
+The state, time, and memory limits are deliberately excluded from the
+compatibility fingerprint so each resumed session can receive a new budget.
+The following must still match:
 
 - the canonical input complex and vertex order;
 - solver, bitset, and isomorphism source hashes and the Sage version;
@@ -482,9 +484,31 @@ bash scripts/batch_calculations.sh extra_knots.csv
 ```
 
 Forced root-homology boundary messages and the final result are still emitted
-regardless of the regular heartbeat interval. Checkpoint writes remain
-independent and can continue every five minutes without generating a full
-heartbeat record each time.
+regardless of the regular heartbeat interval. Batch launches default to
+time-only checkpointing every 30 minutes
+(`CHECKPOINT_INTERVAL_STATES=0`, `CHECKPOINT_INTERVAL_SECONDS=1800`). This
+avoids repeatedly rewriting a large checkpoint when the search completes many
+proof records quickly. Either value can be overridden for a launch or in
+`.env`.
+
+Batch state and time limits default to zero (unlimited). Batch launches set
+`SEARCH_MEMORY_LIMIT_MIB=18432`, leaving about 6 GiB of headroom below the
+default 24 GiB Docker memory ceiling for checkpoint serialization and
+temporary SageMath allocations. When the process RSS reaches the soft limit,
+the solver reports `INCONCLUSIVE_RESOURCE_LIMIT` and writes its checkpoint
+before exiting. This is a cooperative safeguard checked at most once every
+five seconds; it cannot prevent a single SageMath operation from crossing the
+hard container limit. If `SAGE_MEMORY_LIMIT` is lowered, lower
+`SEARCH_MEMORY_LIMIT_MIB` as well so comparable headroom remains.
+
+For example, a launch with a smaller soft memory budget and hourly
+checkpoints can use:
+
+```bash
+SEARCH_MEMORY_LIMIT_MIB=12288 \
+CHECKPOINT_INTERVAL_SECONDS=3600 \
+bash scripts/batch_calculations.sh extra_knots.csv
+```
 
 The long-run cache regression covers the case where the bounded exact failure
 LRU evicts a state that remains a representative in the normalized or

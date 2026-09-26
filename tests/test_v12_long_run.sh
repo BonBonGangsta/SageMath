@@ -39,6 +39,7 @@ NTFY_URL=http://notifications.invalid \
 NTFY_TOPIC=v12-test \
 RANDOM_SEED=987654321 \
 HEARTBEAT_INTERVAL_SECONDS=86400 \
+SEARCH_MEMORY_LIMIT_MIB=18432 \
 bash "${PROJECT_DIR}/run_sage_and_notify.sh" \
     "${WRAPPER_JOB_NAME}" \
     "${PROJECT_DIR}/scripts/knot_nonevasive_v12.sage" \
@@ -47,6 +48,8 @@ bash "${PROJECT_DIR}/run_sage_and_notify.sh" \
 grep -Fxq 'RANDOM_SEED=987654321' \
     "${TEST_OUTPUT_DIR}/wrapper_args.txt"
 grep -Fxq 'HEARTBEAT_INTERVAL_SECONDS=86400' \
+    "${TEST_OUTPUT_DIR}/wrapper_args.txt"
+grep -Fxq 'SEARCH_MEMORY_LIMIT_MIB=18432' \
     "${TEST_OUTPUT_DIR}/wrapper_args.txt"
 
 # Exercise fresh and resumed batch environments with a fake runner.
@@ -59,6 +62,11 @@ printf '%s\n' \
     '  printf "heartbeat=%s\n" "${HEARTBEAT_INTERVAL_SECONDS:-}"' \
     '  printf "checkpoint=%s\n" "${CHECKPOINT_PATH:-}"' \
     '  printf "resume=%s\n" "${CHECKPOINT_RESUME:-}"' \
+    '  printf "checkpoint_states=%s\n" "${CHECKPOINT_INTERVAL_STATES:-}"' \
+    '  printf "checkpoint_seconds=%s\n" "${CHECKPOINT_INTERVAL_SECONDS:-}"' \
+    '  printf "state_limit=%s\n" "${SEARCH_STATE_LIMIT:-}"' \
+    '  printf "time_limit=%s\n" "${SEARCH_TIME_LIMIT_SECONDS:-}"' \
+    '  printf "memory_limit=%s\n" "${SEARCH_MEMORY_LIMIT_MIB:-}"' \
     '} >"${capture}"' \
     >"${TEST_OUTPUT_DIR}/fake-runner.sh"
 chmod +x "${TEST_OUTPUT_DIR}/fake-runner.sh"
@@ -95,12 +103,17 @@ grep -Fxq 'heartbeat=86400' "${FRESH_CAPTURE}"
 grep -Fxq 'checkpoint=outputs/sdB_15_66_06_checkpoint.json' \
     "${FRESH_CAPTURE}"
 grep -Fxq 'resume=false' "${FRESH_CAPTURE}"
+grep -Fxq 'checkpoint_states=0' "${FRESH_CAPTURE}"
+grep -Fxq 'checkpoint_seconds=1800' "${FRESH_CAPTURE}"
+grep -Fxq 'state_limit=0' "${FRESH_CAPTURE}"
+grep -Fxq 'time_limit=0' "${FRESH_CAPTURE}"
+grep -Fxq 'memory_limit=18432' "${FRESH_CAPTURE}"
 
 : >"${TEST_OUTPUT_DIR}/batch/outputs/sdB_15_66_06_checkpoint.json"
 run_batch_and_wait true
 grep -Fxq 'resume=true' \
     "${TEST_OUTPUT_DIR}/batch-captures/true.txt"
 
-echo "PASS: wrapper forwarded the explicit seed and daily heartbeat"
-echo "PASS: batch jobs received stable seeds and unique resumable checkpoints"
+echo "PASS: wrapper forwarded seed, heartbeat, and memory safeguards"
+echo "PASS: batch jobs received stable seeds and production checkpoint defaults"
 echo "All v12 long-run launcher tests passed."
