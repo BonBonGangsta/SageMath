@@ -1919,9 +1919,16 @@ def find_nonevasive_witness(
         if normalized_cached is not _CACHE_MISS:
             verdict, winning_vertex, representative_state = normalized_cached
             if representative_state == state_key:
-                raise RuntimeError(
-                    "Normalized cache returned the current state as an alias"
-                )
+                # The bounded exact failure LRU may evict this state while
+                # the normalized cache still retains its completed result.
+                # This is a direct memoized hit, not an equivalence edge: the
+                # state's original proof record is already in the independent
+                # certificate store.
+                search_stats.normalized_cache_hits += 1
+                witness_cache.store(state_key, verdict, winning_vertex)
+                checkpoint_manager.maybe_write()
+                enforce_search_time_limit()
+                return verdict
             search_stats.normalized_cache_hits += 1
             search_stats.certificate_equivalence_aliases += 1
             witness_cache.store(state_key, verdict, winning_vertex)
@@ -1956,9 +1963,14 @@ def find_nonevasive_witness(
                 vertex_mapping,
             ) = isomorphism_cached
             if representative_state == state_key:
-                raise RuntimeError(
-                    "Isomorphism cache returned the current state as an alias"
-                )
+                # As above, an exact failure may have left the bounded LRU
+                # while its isomorphism-class result and proof record remain.
+                # Restore the exact cache without creating a self-alias.
+                search_stats.isomorphism_cache_hits += 1
+                witness_cache.store(state_key, verdict, winning_vertex)
+                checkpoint_manager.maybe_write()
+                enforce_search_time_limit()
+                return verdict
             search_stats.isomorphism_cache_hits += 1
             search_stats.certificate_isomorphism_aliases += 1
             witness_cache.store(state_key, verdict, winning_vertex)

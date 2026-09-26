@@ -18,6 +18,7 @@ tests=(
     tests/test_v12_stage6b.sh
     tests/test_v12_stage7.sh
     tests/test_v12_stage8.sh
+    tests/test_v12_long_run.sh
 )
 
 cd "${PROJECT_DIR}"

@@ -580,14 +580,35 @@ them for the complexes under study.
 
 ## Batch concurrency decision
 
-No immediate change is planned for `batch_calculations.sh`.
+The batch launcher continues to start the submitted jobs without imposing an
+automatic concurrency limit; current usage can therefore remain manually
+limited to two jobs per server. It now assigns each job a stable seed and a
+unique checkpoint path, and automatically requests resume when that path
+already exists. An optional fifth CSV column can override the derived seed.
+Automated `MAX_PARALLEL` scheduling remains a possible later addition.
 
-The batch launcher was intentionally created to start multiple smaller jobs,
-and current usage is limited manually to two simultaneous jobs per server.
-That is a reasonable operating procedure. If automated scheduling becomes
-useful later, an optional `MAX_PARALLEL` setting can be added without removing
-the existing ability to submit several jobs. This is lower priority than search
-correctness, certificates, and checkpointing.
+The wrapper default heartbeat interval is now one day rather than five minutes
+to keep multi-month logs compact. Forced phase-boundary and final messages are
+retained, and checkpoint frequency remains independent of heartbeat frequency.
+
+## Post-deployment long-run cache correction
+
+Status: completed on 2026-09-26.
+
+The first 319-vertex production batch run exposed a lifetime mismatch between
+the bounded exact failure LRU and the longer-lived normalized cache. After the
+exact cache reached 500,000 failures and began evicting entries, a state could
+be revisited while it remained its own normalized representative. The solver
+incorrectly raised a self-alias invariant error even though the completed
+verdict and independent proof record were still valid.
+
+Normalized and isomorphism hits whose representative is the current state now
+restore the evicted exact entry and return the completed verdict without
+writing a self-alias certificate edge. A focused test recreates both eviction
+paths with a one-entry exact LRU. Additional launcher tests confirm seed
+forwarding, daily heartbeats, stable batch seeds, unique checkpoints, and
+automatic resume selection. The full 15-suite v12 regression matrix passed in
+a fresh disposable Sage container.
 
 ## Recommended next sequence
 
@@ -617,3 +638,4 @@ correctness, certificates, and checkpointing.
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 6B: added profiled adaptive obstruction scheduling, configurable small-prime homology, and a certified no-free-face obstruction. | Free-face detection matched Sage on 189 complexes; the Dunce Hat certificate fell from nine states to one; GF(3) detected Moore-space torsion missed by GF(2); certificates and the A/B runner verified. |
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 7: added atomic, checksummed checkpoint/resume with compatibility fingerprints, overwrite protection, and cooperative signal handling. | A bounded Rudin run resumed to the exact uninterrupted 47-state certificate; SIGTERM resumed equivalently; completed and strict-policy resumes passed; stale and corrupted checkpoints were rejected. |
 | 2026-09-25 | `feature/nonevasive-v12` | Stage 8: added an independent recursive oracle, exhaustive small-complex and relabeling comparisons, named topology fixtures, and a consolidated regression runner. | Cache-on/off verdicts matched for all 189 complexes; all 4,101 relabelings agreed; certificates and corruptions behaved correctly; all 14 accumulated suites passed. |
+| 2026-09-26 | `fix/v12-long-run-cache` | Corrected normalized/isomorphism representative hits after exact-LRU eviction; made batch jobs deterministic, checkpointed, resumable, and less verbose. | Focused eviction, wrapper, and batch regressions passed; all 15 consolidated suites passed. |

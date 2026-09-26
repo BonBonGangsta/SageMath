@@ -456,3 +456,37 @@ Run every accumulated v12 regression suite in stage order with:
 docker compose run --rm --entrypoint /bin/bash sagemath-runner \
   -c 'cd /workspace && bash tests/run_v12_regression_suite.sh'
 ```
+
+## Long-Running Batch Searches
+
+`scripts/batch_calculations.sh` accepts the following CSV columns:
+
+```text
+ID,KNOT,SCRIPT_PATH,FACET_FILE,RANDOM_SEED
+```
+
+`RANDOM_SEED` is optional. If it is blank or the older four-column format is
+used, the launcher derives a stable seed from the combined knot name and ID.
+Each batch job receives its own checkpoint at
+`outputs/<KNOT>_<ID>_checkpoint.json`. Re-running the same row automatically
+requests resume when that checkpoint exists; the solver still validates its
+input, code hashes, and correctness-affecting settings before accepting it.
+
+The notification wrapper now forwards an explicit `RANDOM_SEED` and emits a
+regular heartbeat once per day by default. Override the interval for a launch
+or in `.env`, for example:
+
+```bash
+HEARTBEAT_INTERVAL_SECONDS=43200 \
+bash scripts/batch_calculations.sh extra_knots.csv
+```
+
+Forced root-homology boundary messages and the final result are still emitted
+regardless of the regular heartbeat interval. Checkpoint writes remain
+independent and can continue every five minutes without generating a full
+heartbeat record each time.
+
+The long-run cache regression covers the case where the bounded exact failure
+LRU evicts a state that remains a representative in the normalized or
+isomorphism cache. Such a revisit restores the exact entry directly and does
+not create an invalid self-alias proof edge.
